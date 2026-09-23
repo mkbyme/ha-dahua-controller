@@ -21,6 +21,7 @@ import asyncio
 import logging
 import struct
 
+from homeassistant.components import media_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.components.media_player import (
     MediaPlayerDeviceClass,
@@ -85,6 +86,12 @@ class DahuaSpeaker(DahuaControllerEntity, MediaPlayerEntity):
 
     async def _fetch_media_bytes(self, media_id: str) -> bytes:
         url = media_id
+        if media_source.is_media_source_id(url):
+            # tts.speak (and the media browser) hand us a media-source:// URI,
+            # not a fetchable URL - resolve it to a real (often relative
+            # /api/tts_proxy/... or /api/media_source-cache/...) URL first.
+            resolved = await media_source.async_resolve_media(self._hass, url, self.entity_id)
+            url = resolved.url
         if url.startswith("/"):
             url = get_url(self._hass, prefer_external=False) + url
         session = async_get_clientsession(self._hass)
