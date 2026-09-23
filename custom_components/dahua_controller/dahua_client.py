@@ -167,6 +167,388 @@ def is_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
+# ─────────────────────────────────────────────────────
+# NetSDK binary talk protocol (TCP 37777) - CLIENT_StartTalkEx
+# ─────────────────────────────────────────────────────
+# `audio.cgi?action=postAudioStream` accepts a request and hangs up cleanly on
+# some cameras (the same "no HTTP response on success" signature documented
+# for this client's HTTP path) but never actually drives the speaker on
+# current firmware - confirmed by ear against real hardware, while the same
+# speaker works fine through Dahua's own DMSS app. DMSS talks over Dahua's
+# private binary "NetSDK" protocol on TCP 37777 instead of that CGI, so this
+# is what `play_tone`/`play_media_bytes` use below.
+#
+# This is a from-scratch Python port (asyncio sockets, no new dependency) of
+# the protocol used by go2rtc's NetSDK backchannel
+# (https://github.com/AlexxIT/go2rtc/pull/2431), whose header/handshake
+# layout was recovered byte-for-byte from a live capture of Dahua's official
+# Talk.exe SDK demo. That PR was verified against one device (Dahua E4702
+# OEM); Dahua's lineup is heavily fragmented, so `encode_format` and
+# `_talk_channel` below may need adjusting per model - see their comments.
+_NETSDK_PORT = 37777
+_NETSDK_HEADER_SIZE = 32
+_NETSDK_MAX_FRAME = 64 * 1024
+
+_NETSDK_CMD_LOGIN = 0xA0
+_NETSDK_CMD_LOGIN_RESP = 0xB0
+_NETSDK_CMD_KEEPALIVE = 0xA1
+_NETSDK_CMD_TEXT = 0xF4
+_NETSDK_CMD_TALK_DATA = 0x1D
+
+_NETSDK_TRAILER_CHALLENGE = bytes([0x05, 0x02, 0x00, 0x01, 0x00, 0x00, 0xA1, 0xAA])
+_NETSDK_TRAILER_LOGIN = bytes([0x05, 0x02, 0x00, 0x08, 0x00, 0x00, 0xA1, 0xAA])
+
+# DHAV audio codec id carried in the talk sub-header (FFmpeg libavformat/dhav.c);
+# 0x0E = G.711 A-law, the only codec this project ever encodes to.
+_DHAV_CODEC_G711A = 0x0E
+_DHAV_RATE_INDEX_8KHZ = 2  # what Dahua's own clients emit for 8kHz
+
+_NETSDK_LOGIN_ERRORS = {
+    0: "accepted but no session id returned",
+    1: "wrong password",
+    2: "user does not exist",
+    3: "timeout waiting for the login",
+    4: "account already logged in elsewhere",
+    5: "account locked",
+    6: "account in the blocklist (too many failed attempts - wait out the lockout)",
+    7: "device is busy / resource limit",
+    8: "sub connection limit reached",
+    9: "no free channel",
+}
+
+
+def _netsdk_upper_md5(s: str) -> str:
+    return hashlib.md5(s.encode()).hexdigest().upper()
+
+
+def _netsdk_gen1_hash(password: str) -> str:
+    """Dahua legacy 'OldDigest': MD5(password), adjacent byte pairs summed mod 62."""
+    digest = hashlib.md5(password.encode()).digest()
+    out = bytearray(8)
+    for i in range(8):
+        v = (digest[i * 2] + digest[i * 2 + 1]) % 62
+        if v < 10:
+            v += 48  # '0'-'9'
+        elif v < 36:
+            v += 55  # 'A'-'Z'
+        else:
+            v += 61  # 'a'-'z'
+        out[i] = v
+    return out.decode("ascii")
+
+
+def _netsdk_login_payload(user: str, password: str, realm: str, random_: str) -> bytes:
+    """`<user>&&<gen2 32hex><gen1 32hex>`: gen2 is the modern two-stage MD5,
+    gen1 the legacy scrambled hash re-hashed with the random. Matches Dahua's
+    'dvrip' login mode (the only scheme this protocol answers to).
+    """
+    gen2 = _netsdk_upper_md5(f"{user}:{realm}:{password}")
+    gen2 = _netsdk_upper_md5(f"{user}:{random_}:{gen2}")
+    gen1 = _netsdk_upper_md5(f"{user}:{random_}:{_netsdk_gen1_hash(password)}")
+    return f"{user}&&{gen2}{gen1}".encode()
+
+
+def _netsdk_build_frame(cmd: int, body: bytes = b"", trailer: bytes | None = None) -> bytes:
+    """32 byte header + body. Only the login command sets the 05 00 60 magic
+    at header[1:4]; every other command leaves it zero.
+    """
+    buf = bytearray(_NETSDK_HEADER_SIZE + len(body))
+    buf[0] = cmd
+    if cmd == _NETSDK_CMD_LOGIN:
+        buf[1], buf[2], buf[3] = 0x05, 0x00, 0x60
+    struct.pack_into("<I", buf, 4, len(body))
+    if trailer:
+        buf[24:32] = trailer
+    buf[_NETSDK_HEADER_SIZE:] = body
+    return bytes(buf)
+
+
+def _netsdk_build_talk_audio(payload: bytes, codec_id: int, rate_index: int, rate: int) -> bytes:
+    """Wrap one audio chunk in the 0x1D talk frame: 32 byte header describing
+    the raw stream (bits/channels/rate) + an 8 byte DHAV sub-header
+    describing this specific packet (codec id + payload length) + payload.
+    """
+    buf = bytearray(_NETSDK_HEADER_SIZE + 8 + len(payload))
+    buf[0] = _NETSDK_CMD_TALK_DATA
+    struct.pack_into("<I", buf, 4, 8 + len(payload))
+    buf[8] = 0x02  # audio
+    struct.pack_into("<I", buf, 9, 16)  # bits/sample; camera reads the DHAV codec id instead
+    struct.pack_into("<I", buf, 13, 1)  # channels
+    struct.pack_into("<I", buf, 17, rate)
+    sub = _NETSDK_HEADER_SIZE
+    buf[sub : sub + 4] = b"\x00\x00\x01\xf0"
+    buf[sub + 4] = codec_id
+    buf[sub + 5] = rate_index
+    struct.pack_into("<H", buf, sub + 6, len(payload))
+    buf[sub + 8 :] = payload
+    return bytes(buf)
+
+
+async def _netsdk_read_frame(reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
+    hdr = await reader.readexactly(_NETSDK_HEADER_SIZE)
+    n = struct.unpack_from("<I", hdr, 4)[0]
+    if n > _NETSDK_MAX_FRAME:
+        raise DahuaClientError(f"NetSDK: bogus frame length {n}")
+    body = await reader.readexactly(n) if n else b""
+    return hdr, body
+
+
+def _netsdk_parse_kv(body: bytes) -> dict[str, str]:
+    text = body.rstrip(b"\x00\r\n").decode(errors="replace")
+    out: dict[str, str] = {}
+    for line in text.split("\r\n"):
+        if ":" in line:
+            k, v = line.split(":", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+class DahuaNetSDKTalk:
+    """One-shot two-way-talk (speaker push) session over Dahua's private
+    binary NetSDK protocol, TCP 37777 (`CLIENT_StartTalkEx`). Opens a control
+    connection + a second "sub channel" connection, negotiates a talk
+    session, streams G.711 A-law audio as real-time-paced 320-byte (40ms)
+    frames - Dahua's own clients chunk this way and firmware has been
+    observed to drop audio sent out of cadence - then tears the session down.
+    Not reusable: construct one per playback.
+    """
+
+    def __init__(self, host: str, username: str, password: str, channel: int, timeout: float = 5.0) -> None:
+        self._host = host
+        self._username = username
+        self._password = password
+        # This project's `channel` config is 1-based (used as-is in the CGI
+        # `channel=` query param). NetSDK's Talk.General channel is a 0-based
+        # talk-channel table index instead, so channel=1 (this project's
+        # default/only value so far) maps to talk channel 0 - the safest,
+        # most common value. go2rtc reports out-of-range talk channels
+        # rebooting some firmware repeatedly, so this is deliberately a
+        # straight subtraction, never auto-probed/incremented at runtime.
+        self._talk_channel = max(0, int(channel) - 1)
+        self._timeout = timeout
+        # DH_TALK_G711a (2): matches the G.711 A-law bytes this project always
+        # sends. go2rtc's one verified device actually answers EncodeFormat=1
+        # (DH_TALK_PCM, the official demo's default) while still accepting
+        # G.711A in the DHAV sub-header - if a camera stays silent, try 1.
+        self.encode_format = 2
+
+        self._ctrl_reader: asyncio.StreamReader | None = None
+        self._ctrl_writer: asyncio.StreamWriter | None = None
+        self._sub_reader: asyncio.StreamReader | None = None
+        self._sub_writer: asyncio.StreamWriter | None = None
+        self._ctrl_lock = asyncio.Lock()
+        self._session = 0
+        self._conn_id = ""
+        self._opened = False
+        self._keepalive_task: asyncio.Task | None = None
+        self._receive_task: asyncio.Task | None = None
+
+    async def play_alaw(self, alaw: bytes) -> bool:
+        """Open a talk session, stream `alaw`, then close. Returns False (and
+        logs the reason) on any failure instead of raising - callers treat
+        this the same as the old CGI-based play_tone/play_media_bytes.
+        """
+        try:
+            await self._open()
+        except DahuaClientError as err:
+            _LOGGER.error("[NetSDK] Open talk session failed: %s", err)
+            return False
+
+        try:
+            frame_size = 320  # 40ms @ 8kHz mono G.711 (1 byte/sample)
+            for i in range(0, len(alaw), frame_size):
+                if not await self._write_audio(alaw[i : i + frame_size]):
+                    return False
+                await asyncio.sleep(0.04)
+            return True
+        finally:
+            await self._close()
+
+    async def _open(self) -> None:
+        try:
+            self._ctrl_reader, self._ctrl_writer = await asyncio.wait_for(
+                asyncio.open_connection(self._host, _NETSDK_PORT), timeout=self._timeout
+            )
+            await self._login()
+            self._conn_id = await self._add_object()
+
+            self._sub_reader, self._sub_writer = await asyncio.wait_for(
+                asyncio.open_connection(self._host, _NETSDK_PORT), timeout=self._timeout
+            )
+            await self._ack_sub_channel()
+
+            # The official client sends one bare keepalive before the first audio frame.
+            self._sub_writer.write(_netsdk_build_frame(_NETSDK_CMD_KEEPALIVE))
+            await self._sub_writer.drain()
+
+            await self._set_talk_state(True)
+        except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
+            raise DahuaClientError(f"NetSDK handshake failed: {err}") from err
+
+        self._opened = True
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        # Draining the sub channel is mandatory even though nothing consumes
+        # the camera's mic audio here - otherwise its send buffer fills and it
+        # stops accepting our outgoing talk frames.
+        self._receive_task = asyncio.create_task(self._receive_loop())
+
+    async def _login(self) -> None:
+        async with self._ctrl_lock:
+            self._ctrl_writer.write(_netsdk_build_frame(_NETSDK_CMD_LOGIN, trailer=_NETSDK_TRAILER_CHALLENGE))
+            await self._ctrl_writer.drain()
+        hdr, body = await asyncio.wait_for(_netsdk_read_frame(self._ctrl_reader), timeout=self._timeout)
+        if hdr[0] != _NETSDK_CMD_LOGIN_RESP:
+            raise DahuaClientError(f"NetSDK: unexpected challenge reply 0x{hdr[0]:02X}")
+
+        kv = _netsdk_parse_kv(body)
+        realm, random_ = kv.get("Realm", ""), kv.get("Random", "")
+        if not realm or not random_:
+            raise DahuaClientError(f"NetSDK: malformed login challenge {body!r}")
+
+        payload = _netsdk_login_payload(self._username, self._password, realm, random_)
+        async with self._ctrl_lock:
+            self._ctrl_writer.write(_netsdk_build_frame(_NETSDK_CMD_LOGIN, payload, trailer=_NETSDK_TRAILER_LOGIN))
+            await self._ctrl_writer.drain()
+        hdr, body = await asyncio.wait_for(_netsdk_read_frame(self._ctrl_reader), timeout=self._timeout)
+        session = struct.unpack_from("<I", hdr, 16)[0]
+        if session == 0:
+            reason = _NETSDK_LOGIN_ERRORS.get(hdr[8], "unknown reason")
+            raise DahuaAuthError(f"NetSDK login refused: {reason}")
+        self._session = session
+
+    async def _add_object(self) -> str:
+        await self._send_text(
+            self._ctrl_writer,
+            [
+                "TransactionID:6",
+                "Method:AddObject",
+                "ParameterName:Dahua.Device.Network.ControlConnection.Passive",
+                "ConnectProtocol:0",
+            ],
+        )
+        kv = await self._await_text(self._ctrl_reader, "AddObjectResponse")
+        if kv.get("FaultCode", "OK") != "OK":
+            raise DahuaClientError(f"NetSDK: AddObject FaultCode={kv.get('FaultCode')}")
+        conn_id = kv.get("ConnectionID")
+        if not conn_id:
+            raise DahuaClientError("NetSDK: AddObject returned no ConnectionID")
+        return conn_id
+
+    async def _ack_sub_channel(self) -> None:
+        await self._send_text(
+            self._sub_writer,
+            [
+                "TransactionID:0",
+                "Method:GetParameterNames",
+                "ParameterName:Dahua.Device.Network.ControlConnection.AckSubChannel",
+                f"SessionID:{self._session}",
+                f"ConnectionID:{self._conn_id}",
+                "Encrypt:0",
+            ],
+        )
+        kv = await self._await_text(self._sub_reader, "AckSubChannel")
+        if kv.get("FaultCode") != "OK":
+            raise DahuaClientError(f"NetSDK: AckSubChannel FaultCode={kv.get('FaultCode')}")
+
+    async def _set_talk_state(self, on: bool) -> None:
+        depth, freq, state, tid = ("16", "8000", "1", "7") if on else ("0", "0", "0", "8")
+        await self._send_text(
+            self._ctrl_writer,
+            [
+                f"TransactionID:{tid}",
+                "Method:GetParameterNames",
+                "ParameterName:Dahua.Device.Network.Talk.General",
+                f"Channel:{self._talk_channel}",
+                f"EncodeFormat:{self.encode_format}",
+                f"Depth:{depth}",
+                f"Frequency:{freq}",
+                f"State:{state}",
+                f"ConnectionID:{self._conn_id}",
+                "TalkMode:0",
+            ],
+        )
+
+    async def _write_audio(self, payload: bytes) -> bool:
+        if not self._opened or self._sub_writer is None:
+            return False
+        frame = _netsdk_build_talk_audio(payload, _DHAV_CODEC_G711A, _DHAV_RATE_INDEX_8KHZ, 8000)
+        try:
+            self._sub_writer.write(frame)
+            await asyncio.wait_for(self._sub_writer.drain(), timeout=5)
+        except (OSError, asyncio.TimeoutError) as err:
+            _LOGGER.error("[NetSDK] WriteAudio failed: %s", err)
+            return False
+        return True
+
+    async def _keepalive_loop(self) -> None:
+        frame = _netsdk_build_frame(_NETSDK_CMD_KEEPALIVE)
+        try:
+            while True:
+                await asyncio.sleep(1)
+                async with self._ctrl_lock:
+                    self._ctrl_writer.write(frame)
+                    await self._ctrl_writer.drain()
+        except (asyncio.CancelledError, OSError):
+            pass
+
+    async def _receive_loop(self) -> None:
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(_netsdk_read_frame(self._sub_reader), timeout=2)
+                except asyncio.TimeoutError:
+                    continue
+        except (asyncio.CancelledError, OSError, asyncio.IncompleteReadError):
+            pass
+
+    async def _send_text(self, writer: asyncio.StreamWriter, lines: list[str]) -> None:
+        frame = _netsdk_build_frame(_NETSDK_CMD_TEXT, ("\r\n".join(lines) + "\r\n\r\n").encode())
+        if writer is self._ctrl_writer:
+            async with self._ctrl_lock:
+                writer.write(frame)
+                await writer.drain()
+        else:
+            writer.write(frame)
+            await writer.drain()
+
+    async def _await_text(self, reader: asyncio.StreamReader, want: str) -> dict[str, str]:
+        for _ in range(32):
+            hdr, body = await asyncio.wait_for(_netsdk_read_frame(reader), timeout=self._timeout)
+            if hdr[0] != _NETSDK_CMD_TEXT or want.encode() not in body:
+                continue
+            return _netsdk_parse_kv(body)
+        raise DahuaClientError(f"NetSDK: no {want} reply from camera")
+
+    async def _close(self) -> None:
+        if self._opened and self._ctrl_writer is not None:
+            try:
+                await self._set_talk_state(False)
+                await self._send_text(
+                    self._ctrl_writer,
+                    [
+                        "TransactionID:9",
+                        "Method:DeleteObject",
+                        "ParameterName:Dahua.Device.Network.ControlConnection.Passive",
+                        f"ConnectionID:{self._conn_id}",
+                    ],
+                )
+            except (OSError, asyncio.TimeoutError, DahuaClientError):
+                pass
+        self._opened = False
+
+        for task in (self._keepalive_task, self._receive_task):
+            if task is not None:
+                task.cancel()
+
+        for writer in (self._sub_writer, self._ctrl_writer):
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+
+
 class DahuaClient:
     """Thin async client for one Dahua camera's HTTP CGI surface."""
 
@@ -294,77 +676,6 @@ class DahuaClient:
                     "[_digest_get] Unexpected error: %s → %s: %s", url, type(err).__name__, err
                 )
                 return -1, ""
-
-    async def _digest_post(self, path_and_query: str, body: bytes, content_type: str) -> bool:
-        """POST with digest auth, used only for audio.cgi?action=postAudioStream.
-
-        Dahua accepts the full body then closes the socket with NO HTTP response
-        at all on success - this raises ServerDisconnectedError/ClientPayloadError,
-        which is caught here and treated as success. Only an immediate 4xx (e.g.
-        empty/malformed body) on the SAME authenticated request is a real failure.
-        This except clause is deliberately scoped to only the second (authenticated)
-        POST - do not widen it to the challenge request or to request-writing.
-        """
-        url = f"{self.base_url}{path_and_query}"
-        async with self._lock:
-            try:
-                try:
-                    async with self._session.post(
-                        url, data=b"", timeout=aiohttp.ClientTimeout(total=5)
-                    ) as r1:
-                        if r1.status != 401:
-                            _LOGGER.warning(
-                                "[_digest_post] Expected 401, got %s: %s", r1.status, url
-                            )
-                            return False
-                        www_auth = r1.headers.get("WWW-Authenticate", "")
-                except aiohttp.ClientConnectorError as err:
-                    _LOGGER.error("[_digest_post] Connection refused: %s → %s", url, err)
-                    return False
-                except aiohttp.ServerTimeoutError:
-                    _LOGGER.error("[_digest_post] Timeout (step1): %s", url)
-                    return False
-
-                if not www_auth:
-                    _LOGGER.error("[_digest_post] 401 nhưng không có WWW-Authenticate: %s", url)
-                    return False
-
-                parsed = urlparse(url)
-                uri = parsed.path + ("?" + parsed.query if parsed.query else "")
-                try:
-                    auth_header = self._build_digest_header("POST", uri, www_auth)
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.error("[_digest_post] Tính Digest hash lỗi: %s", err)
-                    return False
-
-                try:
-                    async with self._session.post(
-                        url,
-                        data=body,
-                        headers={"Authorization": auth_header, "Content-Type": content_type},
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as r2:
-                        if r2.status == 200:
-                            return True
-                        _LOGGER.warning("[_digest_post] HTTP %s: %s", r2.status, await r2.text())
-                        return False
-                except (aiohttp.ServerDisconnectedError, aiohttp.ClientPayloadError):
-                    _LOGGER.debug(
-                        "[_digest_post] Stream sent (%d bytes), no ack (bình thường với Dahua)",
-                        len(body),
-                    )
-                    return True
-                except aiohttp.ServerTimeoutError:
-                    _LOGGER.error("[_digest_post] Timeout (step2): %s", url)
-                    return False
-                except aiohttp.ClientConnectorError as err:
-                    _LOGGER.error("[_digest_post] Connection error (step2): %s", err)
-                    return False
-            except Exception as err:  # noqa: BLE001 - mirrors original catch-all
-                _LOGGER.error(
-                    "[_digest_post] Unexpected error: %s → %s: %s", url, type(err).__name__, err
-                )
-                return False
 
     async def _set_config_field(self, index_path: str, field: str, value) -> bool:
         """Write one configManager.cgi field and verify via readback.
@@ -580,26 +891,27 @@ class DahuaClient:
             output_channels=_parse_count(out_status, out_body),
         )
 
-    async def _post_alaw(self, alaw: bytes) -> bool:
-        path = (
-            f"/cgi-bin/audio.cgi?action=postAudioStream&HttpType=singlepart"
-            f"&channel={self._channel}"
-        )
-        return await self._digest_post(path, alaw, "Audio/G.711A")
+    async def _play_alaw(self, alaw: bytes) -> bool:
+        """Push already-alaw-encoded audio to the speaker over the NetSDK
+        binary talk protocol (TCP 37777) - see `DahuaNetSDKTalk` for why this
+        isn't the `audio.cgi` HTTP POST it used to be.
+        """
+        talk = DahuaNetSDKTalk(self._host, self._username, self._password, self._channel)
+        return await talk.play_alaw(alaw)
 
     async def play_tone(self, freq: float = 440.0, duration: float = 1.0) -> bool:
         """Play a one-shot sine tone through the speaker (beep test/alert)."""
         alaw = _gen_tone_alaw(float(freq), float(duration))
-        return await self._post_alaw(alaw)
+        return await self._play_alaw(alaw)
 
     async def play_media_bytes(self, alaw: bytes) -> bool:
-        """POST already-alaw-encoded audio to the speaker.
+        """Push already-alaw-encoded audio to the speaker.
 
         Callers (media_player.py) are responsible for decoding WAV/mp3 source
         bytes down to G.711 A-law before calling this - see
         `wav_bytes_to_alaw`/`pcm16_to_alaw` in this module for the WAV path.
         """
-        return await self._post_alaw(alaw)
+        return await self._play_alaw(alaw)
 
     # ─────────────────────────────────────────────────
     # Light / Active Deterrence

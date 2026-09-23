@@ -129,11 +129,15 @@ class DahuaControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             errors, user_input = await self._validate_and_build_result(user_input)
             if not errors:
+                # unique_id is derived from host:port:channel, which is exactly what
+                # this flow lets the user edit (e.g. camera got a new static IP) - so
+                # it must be re-set here rather than checked with
+                # _abort_if_unique_id_mismatch, which would abort on every host/port/
+                # channel edit and silently leave entry.data unchanged.
                 new_unique_id = (
                     f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}:{user_input[CONF_CHANNEL]}"
                 )
                 await self.async_set_unique_id(new_unique_id)
-                self._abort_if_unique_id_mismatch(reason="wrong_camera")
                 return self.async_update_reload_and_abort(entry, data=user_input)
 
         schema = self.add_suggested_values_to_schema(_schema(), entry.data)
