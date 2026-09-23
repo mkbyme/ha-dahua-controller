@@ -52,6 +52,13 @@ BUTTON_DIRECTIONS = ("up", "down", "left", "right")
 DEFAULT_TONE_FREQ = 440.0
 DEFAULT_TONE_DURATION = 1.0
 
+# ── Speaker output gain (applied to PCM16 samples before A-law encode) ─────
+# Peak-normalize toward this fraction of full scale (±32767); boost-only, never
+# attenuates already-loud audio. AUDIO_MAX_GAIN caps amplification so a
+# near-silent buffer (noise floor, silence padding) doesn't get blown up.
+AUDIO_TARGET_PEAK = 0.95
+AUDIO_MAX_GAIN = 12.0
+
 # ── Light / Active Deterrence config tables ────────────────────────
 # Scanned via configManager.cgi getConfig/setConfig on the reference device
 # (DH-P5D-5F-PV). Lighting[0][0]/Lighting[1][0] are the two light channels;

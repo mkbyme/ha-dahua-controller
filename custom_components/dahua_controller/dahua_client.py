@@ -27,7 +27,7 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import ALARM_TABLE, DIRECTION_MAP, LIGHT_TABLE
+from .const import ALARM_TABLE, AUDIO_MAX_GAIN, AUDIO_TARGET_PEAK, DIRECTION_MAP, LIGHT_TABLE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,7 +114,19 @@ def _linear_to_alaw(pcm_val: int) -> int:
 
 
 def pcm16_to_alaw(samples) -> bytes:
-    """Encode an iterable of signed 16-bit samples to G.711 A-law bytes."""
+    """Peak-normalize (boost-only) then encode signed 16-bit samples to G.711 A-law bytes.
+
+    Source WAV/TTS/mp3 audio is often recorded well below full scale, which made
+    speaker playback sound quiet even though A-law itself doesn't attenuate anything.
+    Gain is capped at AUDIO_MAX_GAIN so a near-silent buffer's noise floor doesn't get
+    blown up, and never reduces already-loud audio (gain <= 1.0 is a no-op).
+    """
+    samples = list(samples)
+    peak = max((abs(s) for s in samples), default=0)
+    if peak:
+        gain = min(AUDIO_MAX_GAIN, (AUDIO_TARGET_PEAK * 32767) / peak)
+        if gain > 1.0:
+            samples = [max(-32768, min(32767, int(s * gain))) for s in samples]
     return bytes(_linear_to_alaw(s) for s in samples)
 
 
