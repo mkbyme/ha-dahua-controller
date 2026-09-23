@@ -24,19 +24,22 @@ integration.
 - Entity `media_player` cho loa camera, dùng được như một target bình thường của
   `tts.speak` hoặc `media_player.play_media` — không cần truyền đường dẫn file cố
   định. Hỗ trợ cả audio nguồn WAV và mp3 (qua ffmpeg).
+- Entity `number` **Speaker Volume** (0-100) — thử nghiệm chỉnh âm lượng phát qua
+  NetSDK. **Chưa xác minh trên thiết bị thật**, xem phần Ghi chú bên dưới.
 
 ## Danh sách entity
 
-| Platform | Entity | Hành động | CGI bên dưới |
+| Platform | Entity | Hành động | Giao thức bên dưới |
 |---|---|---|---|
 | select | Preset | Di chuyển tới preset đã chọn | `ptz.cgi?action=start&code=GotoPreset` |
 | button | PTZ Up/Down/Left/Right | Di chuyển từng bước (start → sleep → stop) | `ptz.cgi?action=start\|stop` |
 | button | PTZ Stop | Dừng di chuyển ở mọi hướng | `ptz.cgi?action=stop` (tất cả code) |
-| button | Play Alert Tone | Phát 1 tiếng bíp qua loa | `audio.cgi?action=postAudioStream` |
+| button | Play Alert Tone | Phát 1 tiếng bíp qua loa | NetSDK talk protocol (TCP 37777) |
 | button | Sync Presets | Đồng bộ lại danh sách preset từ camera | `ptz.cgi?action=getPresets` |
 | switch | Active Deterrence | Bật/tắt tự động đèn+loa+voice khi phát hiện | `configManager.cgi` (`LightGlobal[0].Enable`) |
-| light | Spotlight | Bật/tắt đèn spotlight, chỉnh độ sáng | `configManager.cgi` (`Lighting[1][0]`) |
-| media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | `audio.cgi?action=postAudioStream` |
+| light | Spotlight | Bật/tắt đèn spotlight, chỉnh độ sáng | `configManager.cgi` (`Lighting[1][0]`) + thử nghiệm NetSDK song song |
+| media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | NetSDK talk protocol (TCP 37777) |
+| number | Speaker Volume | Đặt âm lượng phát cho lần play tiếp theo | NetSDK talk protocol (TCP 37777), thử nghiệm |
 
 ## Cài đặt
 
@@ -86,15 +89,26 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
 - Các lệnh `setConfig` (đèn/Active Deterrence) luôn trả về HTTP 400 trên camera này,
   kể cả khi ghi thành công — integration sẽ đọc lại giá trị để xác nhận và log ở mức
   debug; đây là hành vi bình thường, không phải lỗi.
-- Camera đóng kết nối mà không trả về HTTP response ngay sau khi nhận đủ audio POST
-  thành công — cũng là hành vi bình thường của Dahua với `audio.cgi`, không phải lỗi.
+- **Loa (Speaker/Play Alert Tone) đi qua giao thức nhị phân NetSDK của Dahua ở port
+  37777, không phải `audio.cgi`.** `audio.cgi?action=postAudioStream` từng được dùng
+  nhưng camera nhận request, đóng kết nối sạch sẽ, mà thực tế không hề phát ra loa
+  (kiểm chứng bằng tai trên thiết bị thật) — trong khi app DMSS chính chủ vẫn phát
+  được bình thường qua NetSDK, nên integration đã chuyển hẳn sang giao thức đó.
 - Chỉ số bảng cấu hình của đèn spotlight (`Lighting[1][0]`) là **giả định chưa được
   xác minh bằng mắt** — mới chỉ xác nhận qua đọc lại config, chưa xác nhận đèn thật
   có sáng lên không. Nếu entity Spotlight không làm đèn sáng lên, sửa `LIGHT_TABLE`
   trong `custom_components/dahua_controller/const.py` thành `"Lighting[0][0]"` rồi
   reload lại integration.
-- Integration này giao tiếp với camera qua HTTP CGI ở port 80, không dùng giao thức
-  nhị phân của Dahua ở port 37777.
+- **Thử nghiệm:** vì nghi ngờ `configManager.cgi` (đèn) cũng gặp tình trạng giống
+  `audio.cgi` (nhận request nhưng không tác động phần cứng thật), `light_set()` giờ
+  bắn thêm một lệnh NetSDK song song (best-effort, không ảnh hưởng tới trạng thái CGI
+  hiện có) — theo dõi log HA với từ khoá `[NetSDK][light]` để xem camera phản hồi gì,
+  vì tên `ParameterName` (`const.NETSDK_LIGHT_PARAM`) hiện là **suy đoán chưa được xác
+  minh**, ngoại suy từ đối tượng NetSDK duy nhất đã xác nhận hoạt động
+  (`Dahua.Device.Network.Talk.General`, dùng cho loa).
+- **Thử nghiệm:** entity `number` Speaker Volume gửi thêm trường `Volume` trong phiên
+  NetSDK talk (`DahuaNetSDKTalk.volume`) — cũng là suy đoán chưa xác minh, không có
+  cách đọc lại mức âm lượng thật của camera, nên hãy tự kiểm tra bằng tai.
 
 ## Camera tương thích
 

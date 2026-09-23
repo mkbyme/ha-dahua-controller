@@ -34,6 +34,7 @@ PLATFORMS = [
     Platform.SWITCH,
     Platform.LIGHT,
     Platform.MEDIA_PLAYER,
+    Platform.NUMBER,
 ]
 
 # ── PTZ direction → Dahua ptz.cgi code map ─────────────────────────
@@ -68,3 +69,24 @@ AUDIO_MAX_GAIN = 12.0
 # doesn't visibly do anything, flip this to "Lighting[0][0]" and reload.
 LIGHT_TABLE = "Lighting[1][0]"
 ALARM_TABLE = "LightGlobal[0]"
+
+# ── EXPERIMENTAL: NetSDK (TCP 37777) config attempt for lighting ───────────
+# The configManager.cgi write above (LIGHT_TABLE) is verified to persist -
+# reading the config back confirms it - but was never confirmed to actually
+# drive the physical light. That's the exact same "CGI accepts the request
+# but does nothing on real hardware" pattern already hit and fixed for
+# audio.cgi (see the DahuaNetSDKTalk docstring in dahua_client.py), so
+# light_set() also fires this as a best-effort NetSDK attempt alongside the
+# CGI write. UNVERIFIED GUESS: this ParameterName is extrapolated from the
+# one NetSDK object this project has confirmed working
+# ("Dahua.Device.Network.Talk.General") - there is no reference/capture for
+# the correct lighting object name or even confirmation this RPC shape
+# applies outside of Talk. Watch the HA log for "[NetSDK][light]" lines and
+# report the raw response back so this can be corrected against your camera.
+NETSDK_LIGHT_PARAM = "Dahua.Device.Lighting[1][0]"
+
+# ── Speaker volume (see DahuaClient.speaker_volume_set) ────────────────────
+# Initial value shown by the number.<camera>_speaker_volume entity. There is
+# no way to read the camera's actual output level back, so this is just "the
+# value we'll ask for" on the next playback, not a confirmed hardware state.
+DEFAULT_SPEAKER_VOLUME = 100
