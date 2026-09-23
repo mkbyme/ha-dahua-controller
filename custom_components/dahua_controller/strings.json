@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Dahua Camera",
+        "description": "Enter the camera's connection details.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "username": "Username",
+          "password": "[%key:common::config_flow::data::password%]",
+          "channel": "Channel",
+          "name": "Name"
+        }
+      },
+      "reconfigure": {
+        "title": "Update Dahua Camera",
+        "description": "Edit the camera's connection details.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "username": "Username",
+          "password": "[%key:common::config_flow::data::password%]",
+          "channel": "Channel",
+          "name": "Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]",
+      "wrong_camera": "This is a different camera than the one being reconfigured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PTZ & polling options",
+        "data": {
+          "ptz_speed": "PTZ step speed (1-8)",
+          "ptz_duration": "PTZ step duration (seconds)",
+          "ptz_steps": "PTZ steps per button press",
+          "scan_interval": "Poll interval (seconds)"
+        }
+      }
+    }
+  }
+}

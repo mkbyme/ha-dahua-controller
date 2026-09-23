@@ -1,0 +1,12 @@
+{
+  "domain": "dahua_controller",
+  "name": "Dahua Controller",
+  "codeowners": ["@mkbyme"],
+  "config_flow": true,
+  "dependencies": ["ffmpeg"],
+  "documentation": "https://github.com/mkbyme/ha-dahua-controller",
+  "issue_tracker": "https://github.com/mkbyme/ha-dahua-controller/issues",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "2026.09.23"
+}

@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Thêm Camera Dahua",
+        "description": "Nhập thông tin kết nối của camera.",
+        "data": {
+          "host": "Host / Địa chỉ IP",
+          "port": "Cổng (port)",
+          "username": "Tên đăng nhập",
+          "password": "Mật khẩu",
+          "channel": "Kênh (channel)",
+          "name": "Tên camera"
+        }
+      },
+      "reconfigure": {
+        "title": "Cập nhật Camera Dahua",
+        "description": "Sửa lại thông tin kết nối của camera.",
+        "data": {
+          "host": "Host / Địa chỉ IP",
+          "port": "Cổng (port)",
+          "username": "Tên đăng nhập",
+          "password": "Mật khẩu",
+          "channel": "Kênh (channel)",
+          "name": "Tên camera"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Không thể kết nối tới camera. Kiểm tra lại host/port.",
+      "invalid_auth": "Sai tên đăng nhập hoặc mật khẩu.",
+      "unknown": "Lỗi không xác định."
+    },
+    "abort": {
+      "already_configured": "Camera này đã được cấu hình.",
+      "reconfigure_successful": "Đã cập nhật thông tin camera thành công.",
+      "wrong_camera": "Đây là một camera khác với camera đang được cấu hình lại."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tùy chọn PTZ & chu kỳ cập nhật",
+        "data": {
+          "ptz_speed": "Tốc độ PTZ mỗi bước (1-8)",
+          "ptz_duration": "Thời lượng mỗi bước PTZ (giây)",
+          "ptz_steps": "Số bước PTZ mỗi lần bấm nút",
+          "scan_interval": "Chu kỳ cập nhật trạng thái (giây)"
+        }
+      }
+    }
+  }
+}

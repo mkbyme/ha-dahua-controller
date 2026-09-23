@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Dahua Camera",
+        "description": "Enter the camera's connection details.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password",
+          "channel": "Channel",
+          "name": "Name"
+        }
+      },
+      "reconfigure": {
+        "title": "Update Dahua Camera",
+        "description": "Edit the camera's connection details.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password",
+          "channel": "Channel",
+          "name": "Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the camera. Check the host/port.",
+      "invalid_auth": "Invalid username or password.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This camera is already configured.",
+      "reconfigure_successful": "Camera settings updated successfully.",
+      "wrong_camera": "This is a different camera than the one being reconfigured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PTZ & polling options",
+        "data": {
+          "ptz_speed": "PTZ step speed (1-8)",
+          "ptz_duration": "PTZ step duration (seconds)",
+          "ptz_steps": "PTZ steps per button press",
+          "scan_interval": "Poll interval (seconds)"
+        }
+      }
+    }
+  }
+}
