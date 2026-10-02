@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .dahua_client import AudioCapabilities, DahuaClient, LightStatus, Preset
+from .dahua_client import AudioCapabilities, DahuaClient, Preset
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,12 +19,11 @@ _LOGGER = logging.getLogger(__name__)
 class DahuaData:
     """Data refreshed on every poll cycle."""
 
-    light_status: LightStatus = field(default_factory=LightStatus)
     alarm_enabled: bool = False
 
 
 class DahuaCoordinator(DataUpdateCoordinator[DahuaData]):
-    """Polls light + active-deterrence state on an interval.
+    """Polls active-deterrence state on an interval.
 
     Presets and audio capabilities are deliberately NOT part of the periodic
     poll: presets only change when a human re-teaches a position (fetched
@@ -56,6 +55,5 @@ class DahuaCoordinator(DataUpdateCoordinator[DahuaData]):
         self.async_update_listeners()
 
     async def _async_update_data(self) -> DahuaData:
-        light_status = await self.client.light_get_status()
         alarm_enabled = await self.client.alarm_get_status()
-        return DahuaData(light_status=light_status, alarm_enabled=alarm_enabled)
+        return DahuaData(alarm_enabled=alarm_enabled)

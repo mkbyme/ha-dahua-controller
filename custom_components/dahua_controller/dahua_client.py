@@ -1,4 +1,4 @@
-"""Dahua camera HTTP CGI client: digest auth, PTZ, presets, audio, light, alarm.
+"""Dahua camera HTTP CGI client: digest auth, PTZ, presets, audio, alarm.
 
 Ported from the original pyscript `ptz_control.py`. The digest-auth computation,
 the "setConfig always returns HTTP 400 even on success" quirk, and the "audio POST
@@ -29,12 +29,10 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     ALARM_TABLE,
-    AUDIO_MAX_GAIN,
+    AUDIO_BOOST_LIMIT,
+    DEFAULT_AUDIO_GAIN,
     AUDIO_TARGET_PEAK,
-    DEFAULT_SPEAKER_VOLUME,
     DIRECTION_MAP,
-    LIGHT_TABLE,
-    NETSDK_LIGHT_PARAM,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -58,14 +56,6 @@ class Preset:
 
     name: str
     index: int
-
-
-@dataclass
-class LightStatus:
-    """Current spotlight config readback."""
-
-    mode: str | None = None
-    level: int = 0
 
 
 @dataclass
@@ -121,19 +111,23 @@ def _linear_to_alaw(pcm_val: int) -> int:
     return aval ^ mask
 
 
-def pcm16_to_alaw(samples) -> bytes:
-    """Peak-normalize (boost-only) then encode signed 16-bit samples to G.711 A-law bytes.
+def pcm16_to_alaw(samples, gain_percent: int = DEFAULT_AUDIO_GAIN) -> bytes:
+    """Peak-normalize (boost-only), scale by gain_percent, then encode signed
+    16-bit samples to G.711 A-law bytes.
 
     Source WAV/TTS/mp3 audio is often recorded well below full scale, which made
     speaker playback sound quiet even though A-law itself doesn't attenuate anything.
-    Gain is capped at AUDIO_MAX_GAIN so a near-silent buffer's noise floor doesn't get
-    blown up, and never reduces already-loud audio (gain <= 1.0 is a no-op).
+    The normalizing boost is capped at AUDIO_BOOST_LIMIT so a near-silent buffer's
+    noise floor doesn't get blown up. gain_percent (100-150, the user's "Max audio
+    gain" option) then scales on top of that; above 100 it deliberately drives peaks
+    into clipping for extra loudness. At 100 already-loud audio is left untouched.
     """
     samples = list(samples)
     peak = max((abs(s) for s in samples), default=0)
     if peak:
-        gain = min(AUDIO_MAX_GAIN, (AUDIO_TARGET_PEAK * 32767) / peak)
-        if gain > 1.0:
+        gain = min(AUDIO_BOOST_LIMIT, (AUDIO_TARGET_PEAK * 32767) / peak)
+        gain = max(gain, 1.0) * gain_percent / 100
+        if gain != 1.0:
             samples = [max(-32768, min(32767, int(s * gain))) for s in samples]
     return bytes(_linear_to_alaw(s) for s in samples)
 
@@ -151,14 +145,20 @@ def _resample_pcm16(samples, src_rate: int, dst_rate: int = 8000):
     return [samples[min(src_n - 1, int(i * src_rate / dst_rate))] for i in range(dst_n)]
 
 
-def _gen_tone_alaw(freq: float, duration: float, rate: int = 8000, amplitude: int = 9000) -> bytes:
+def _gen_tone_alaw(
+    freq: float,
+    duration: float,
+    rate: int = 8000,
+    amplitude: int = 9000,
+    gain_percent: int = DEFAULT_AUDIO_GAIN,
+) -> bytes:
     """Generate a sine tone (PCM16 -> A-law) for the speaker beep test."""
     n = int(rate * duration)
     samples = [int(amplitude * math.sin(2 * math.pi * freq * i / rate)) for i in range(n)]
-    return pcm16_to_alaw(samples)
+    return pcm16_to_alaw(samples, gain_percent)
 
 
-def wav_bytes_to_alaw(data: bytes) -> bytes:
+def wav_bytes_to_alaw(data: bytes, gain_percent: int = DEFAULT_AUDIO_GAIN) -> bytes:
     """Decode WAV (PCM16, mono/stereo, any sample rate) from an in-RAM buffer,
     resample to 8kHz mono, and encode to G.711 A-law for the camera speaker.
     """
@@ -179,7 +179,7 @@ def wav_bytes_to_alaw(data: bytes) -> bytes:
         raise ValueError(f"Chỉ hỗ trợ mono/stereo, file này có {n_channels} channels")
 
     samples = _resample_pcm16(samples, frame_rate, 8000)
-    return pcm16_to_alaw(samples)
+    return pcm16_to_alaw(samples, gain_percent)
 
 
 def is_wav(data: bytes) -> bool:
@@ -351,12 +351,6 @@ class DahuaNetSDKTalk:
         # (DH_TALK_PCM, the official demo's default) while still accepting
         # G.711A in the DHAV sub-header - if a camera stays silent, try 1.
         self.encode_format = 2
-        # EXPERIMENTAL: 0-100, sent as an extra "Volume" field on the
-        # Talk.General session (see _set_talk_state). Dahua's talk API is
-        # known to carry a per-session output volume in some SDK versions -
-        # unverified on this hardware, and there's no readback, so this is a
-        # best-effort nudge, not a confirmed hardware control.
-        self.volume = 100
 
         self._ctrl_reader: asyncio.StreamReader | None = None
         self._ctrl_writer: asyncio.StreamWriter | None = None
@@ -490,8 +484,6 @@ class DahuaNetSDKTalk:
             f"ConnectionID:{self._conn_id}",
             "TalkMode:0",
         ]
-        if on:
-            lines.append(f"Volume:{max(0, min(100, int(self.volume)))}")
         await self._send_text(self._ctrl_writer, lines)
 
     async def _write_audio(self, payload: bytes) -> bool:
@@ -575,161 +567,6 @@ class DahuaNetSDKTalk:
                     pass
 
 
-class DahuaNetSDKConfig:
-    """EXPERIMENTAL one-shot NetSDK (TCP 37777) config get/set.
-
-    Reuses the "Method:GetParameterNames" text-RPC shape this project has
-    only ever confirmed working for one object,
-    "Dahua.Device.Network.Talk.General" (see DahuaNetSDKTalk) - whether that
-    shape extends to non-Talk objects like lighting at all is unverified, so
-    treat failures here as expected until proven otherwise on real hardware.
-    Login/AddObject are intentionally duplicated from DahuaNetSDKTalk rather
-    than shared through a common base class, to avoid risking any regression
-    to that already-working audio path while this is still being figured out.
-    """
-
-    def __init__(self, host: str, username: str, password: str, timeout: float = 5.0) -> None:
-        self._host = host
-        self._username = username
-        self._password = password
-        self._timeout = timeout
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._conn_id = ""
-
-    async def get_config(self, parameter_name: str) -> dict[str, str]:
-        """Best-effort GetParameterNames query; returns {} if the camera
-        never replied within the timeout."""
-        await self._connect()
-        try:
-            await self._send_text(
-                [
-                    "TransactionID:1",
-                    "Method:GetParameterNames",
-                    f"ParameterName:{parameter_name}",
-                    f"ConnectionID:{self._conn_id}",
-                ]
-            )
-            return await self._read_any_text()
-        finally:
-            await self._disconnect()
-
-    async def set_config(self, parameter_name: str, fields: dict[str, object]) -> dict[str, str]:
-        """Best-effort config write: same RPC shape as get_config with extra
-        key/value fields appended, mirroring how DahuaNetSDKTalk's
-        _set_talk_state pushes Depth/Frequency/State alongside its
-        ParameterName. A silent accept (empty dict) is plausible and not
-        necessarily a failure - `_set_talk_state` doesn't wait for a reply at
-        all for the one object this protocol has confirmed working.
-        """
-        await self._connect()
-        try:
-            lines = [
-                "TransactionID:2",
-                "Method:GetParameterNames",
-                f"ParameterName:{parameter_name}",
-                f"ConnectionID:{self._conn_id}",
-            ] + [f"{k}:{v}" for k, v in fields.items()]
-            await self._send_text(lines)
-            return await self._read_any_text()
-        finally:
-            await self._disconnect()
-
-    async def _connect(self) -> None:
-        self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_connection(self._host, _NETSDK_PORT), timeout=self._timeout
-        )
-        await self._login()
-        self._conn_id = await self._add_object()
-
-    async def _login(self) -> None:
-        self._writer.write(_netsdk_build_frame(_NETSDK_CMD_LOGIN, trailer=_NETSDK_TRAILER_CHALLENGE))
-        await self._writer.drain()
-        hdr, body = await asyncio.wait_for(_netsdk_read_frame(self._reader), timeout=self._timeout)
-        if hdr[0] != _NETSDK_CMD_LOGIN_RESP:
-            raise DahuaClientError(f"NetSDK: unexpected challenge reply 0x{hdr[0]:02X}")
-
-        kv = _netsdk_parse_kv(body)
-        realm, random_ = kv.get("Realm", ""), kv.get("Random", "")
-        if not realm or not random_:
-            raise DahuaClientError(f"NetSDK: malformed login challenge {body!r}")
-
-        payload = _netsdk_login_payload(self._username, self._password, realm, random_)
-        self._writer.write(_netsdk_build_frame(_NETSDK_CMD_LOGIN, payload, trailer=_NETSDK_TRAILER_LOGIN))
-        await self._writer.drain()
-        hdr, body = await asyncio.wait_for(_netsdk_read_frame(self._reader), timeout=self._timeout)
-        session = struct.unpack_from("<I", hdr, 16)[0]
-        if session == 0:
-            reason = _NETSDK_LOGIN_ERRORS.get(hdr[8], "unknown reason")
-            raise DahuaAuthError(f"NetSDK login refused: {reason}")
-
-    async def _add_object(self) -> str:
-        await self._send_text(
-            [
-                "TransactionID:6",
-                "Method:AddObject",
-                "ParameterName:Dahua.Device.Network.ControlConnection.Passive",
-                "ConnectProtocol:0",
-            ]
-        )
-        kv = await self._await_text("AddObjectResponse")
-        if kv.get("FaultCode", "OK") != "OK":
-            raise DahuaClientError(f"NetSDK: AddObject FaultCode={kv.get('FaultCode')}")
-        conn_id = kv.get("ConnectionID")
-        if not conn_id:
-            raise DahuaClientError("NetSDK: AddObject returned no ConnectionID")
-        return conn_id
-
-    async def _send_text(self, lines: list[str]) -> None:
-        frame = _netsdk_build_frame(_NETSDK_CMD_TEXT, ("\r\n".join(lines) + "\r\n\r\n").encode())
-        self._writer.write(frame)
-        await self._writer.drain()
-
-    async def _await_text(self, want: str) -> dict[str, str]:
-        for _ in range(32):
-            hdr, body = await asyncio.wait_for(_netsdk_read_frame(self._reader), timeout=self._timeout)
-            if hdr[0] != _NETSDK_CMD_TEXT or want.encode() not in body:
-                continue
-            return _netsdk_parse_kv(body)
-        raise DahuaClientError(f"NetSDK: no {want} reply from camera")
-
-    async def _read_any_text(self) -> dict[str, str]:
-        """Best-effort: read whatever the camera sends back within the
-        timeout, without requiring a specific method/response name to match
-        (unlike _await_text) - the response shape for non-Talk objects is
-        unknown, so this logs the raw body at debug level regardless of
-        whether it parses into anything useful.
-        """
-        try:
-            hdr, body = await asyncio.wait_for(_netsdk_read_frame(self._reader), timeout=self._timeout)
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError, OSError) as err:
-            _LOGGER.debug("[NetSDK][Config] no response within %.1fs (%s)", self._timeout, err)
-            return {}
-        _LOGGER.debug("[NetSDK][Config] raw response: %r", body)
-        if hdr[0] != _NETSDK_CMD_TEXT:
-            return {}
-        return _netsdk_parse_kv(body)
-
-    async def _disconnect(self) -> None:
-        if self._writer is not None:
-            try:
-                await self._send_text(
-                    [
-                        "TransactionID:9",
-                        "Method:DeleteObject",
-                        "ParameterName:Dahua.Device.Network.ControlConnection.Passive",
-                        f"ConnectionID:{self._conn_id}",
-                    ]
-                )
-            except (OSError, asyncio.TimeoutError):
-                pass
-            self._writer.close()
-            try:
-                await self._writer.wait_closed()
-            except OSError:
-                pass
-
-
 class DahuaClient:
     """Thin async client for one Dahua camera's HTTP CGI surface."""
 
@@ -741,6 +578,7 @@ class DahuaClient:
         username: str,
         password: str,
         channel: int,
+        audio_gain: int = DEFAULT_AUDIO_GAIN,
     ) -> None:
         self._session = async_get_clientsession(hass)
         self._host = host
@@ -753,9 +591,7 @@ class DahuaClient:
         # coordinator poll and a button press concurrently against the same
         # digest nonce/nc sequence, which could otherwise race and 401.
         self._lock = asyncio.Lock()
-        # EXPERIMENTAL, see speaker_volume_set - applied to every subsequent
-        # play_tone/play_media_bytes call via DahuaNetSDKTalk.volume.
-        self._speaker_volume = DEFAULT_SPEAKER_VOLUME
+        self.audio_gain = audio_gain
 
     @property
     def base_url(self) -> str:
@@ -1081,26 +917,11 @@ class DahuaClient:
         isn't the `audio.cgi` HTTP POST it used to be.
         """
         talk = DahuaNetSDKTalk(self._host, self._username, self._password, self._channel)
-        talk.volume = self._speaker_volume
         return await talk.play_alaw(alaw)
-
-    async def speaker_volume_set(self, level: int) -> bool:
-        """Store the desired speaker volume (0-100), applied to every
-        subsequent play_tone/play_media_bytes call via the NetSDK
-        Talk.General session's "Volume" field (DahuaNetSDKTalk.volume).
-
-        EXPERIMENTAL: that Volume field is a best-effort guess - Dahua's talk
-        API is known to carry a per-session output volume in some SDK
-        versions, but this hasn't been verified on this hardware. There is no
-        readback, so this always reports success; confirm by ear whether
-        playback loudness actually changes.
-        """
-        self._speaker_volume = max(0, min(100, int(level)))
-        return True
 
     async def play_tone(self, freq: float = 440.0, duration: float = 1.0) -> bool:
         """Play a one-shot sine tone through the speaker (beep test/alert)."""
-        alaw = _gen_tone_alaw(float(freq), float(duration))
+        alaw = _gen_tone_alaw(float(freq), float(duration), gain_percent=self.audio_gain)
         return await self._play_alaw(alaw)
 
     async def play_media_bytes(self, alaw: bytes) -> bool:
@@ -1113,57 +934,8 @@ class DahuaClient:
         return await self._play_alaw(alaw)
 
     # ─────────────────────────────────────────────────
-    # Light / Active Deterrence
+    # Active Deterrence
     # ─────────────────────────────────────────────────
-    async def light_set(self, on: bool, level: int = 100) -> bool:
-        level = max(0, min(100, int(level))) if on else 0
-        ok_mode = await self._set_config_field(LIGHT_TABLE, "Mode", "Manual")
-        ok_level = await self._set_config_field(LIGHT_TABLE, "NearLight[0].Light", level)
-        await self._light_set_netsdk(on, level)
-        return ok_mode and ok_level
-
-    async def _light_set_netsdk(self, on: bool, level: int) -> None:
-        """EXPERIMENTAL best-effort extra attempt via NetSDK - see
-        const.NETSDK_LIGHT_PARAM for why this exists and why it's an
-        unverified guess. Never affects light_set's return value or the
-        CGI-backed state readback (light_get_status) - purely so you can
-        physically watch the camera and tell from the "[NetSDK][light]" log
-        line whether this did anything CGI alone doesn't.
-        """
-        try:
-            cfg = DahuaNetSDKConfig(self._host, self._username, self._password)
-            resp = await cfg.set_config(
-                NETSDK_LIGHT_PARAM,
-                {"Mode": "Manual" if on else "Off", "NearLight[0].Light": level},
-            )
-            _LOGGER.info(
-                "[NetSDK][light] set_config(%s) -> %s", NETSDK_LIGHT_PARAM, resp or "(no reply)"
-            )
-        except DahuaClientError as err:
-            _LOGGER.warning("[NetSDK][light] experimental attempt failed: %s", err)
-
-    async def light_get_status(self) -> LightStatus:
-        table_name = LIGHT_TABLE.split("[")[0]
-        status, body = await self._digest_get(
-            f"/cgi-bin/configManager.cgi?action=getConfig&name={table_name}"
-        )
-        if status != 200:
-            _LOGGER.error("light_get_status HTTP %s", status)
-            return LightStatus()
-
-        prefix = f"table.{LIGHT_TABLE}."
-        info = {
-            line[len(prefix):].split("=", 1)[0]: line.split("=", 1)[1]
-            for line in body.splitlines()
-            if line.startswith(prefix)
-        }
-        mode = info.get("Mode")
-        try:
-            level = int(info.get("NearLight[0].Light", 0))
-        except ValueError:
-            level = 0
-        return LightStatus(mode=mode, level=level)
-
     async def alarm_set(self, enable: bool) -> bool:
         value = "true" if enable else "false"
         return await self._set_config_field(ALARM_TABLE, "Enable", value)

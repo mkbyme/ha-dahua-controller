@@ -20,10 +20,12 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
+    CONF_AUDIO_MAX_GAIN,
     CONF_CHANNEL,
     CONF_PTZ_DURATION,
     CONF_PTZ_SPEED,
     CONF_PTZ_STEPS,
+    DEFAULT_AUDIO_GAIN,
     DEFAULT_CHANNEL,
     DEFAULT_DURATION,
     DEFAULT_NAME,
@@ -35,6 +37,8 @@ from .const import (
     ERROR_CANNOT_CONNECT,
     ERROR_INVALID_AUTH,
     ERROR_UNKNOWN,
+    MAX_AUDIO_GAIN,
+    MIN_AUDIO_GAIN,
 )
 from .dahua_client import DahuaAuthError, DahuaClient, DahuaConnectionError
 
@@ -147,8 +151,8 @@ class DahuaControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
-    """Non-credential per-camera tunables: PTZ step speed/duration/steps and
-    the coordinator's poll interval. Credentials are edited via the
+    """Non-credential per-camera tunables: PTZ step speed/duration/steps,
+    speaker gain and the coordinator's poll interval. Credentials are edited via the
     reconfigure flow, not here, to avoid the two flows racing.
     """
 
@@ -177,6 +181,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_SCAN_INTERVAL,
                     default=options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                 ): vol.All(vol.Coerce(int), vol.Range(min=15, max=3600)),
+                vol.Optional(
+                    CONF_AUDIO_MAX_GAIN,
+                    default=options.get(CONF_AUDIO_MAX_GAIN, DEFAULT_AUDIO_GAIN),
+                ): vol.All(
+                    vol.Coerce(int), vol.Range(min=MIN_AUDIO_GAIN, max=MAX_AUDIO_GAIN)
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

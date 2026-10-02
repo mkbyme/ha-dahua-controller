@@ -5,7 +5,7 @@
 HACS Điều khiển PTZ, Speaker, thiết lập dahua camera
 
 Custom integration cho Home Assistant, dùng để điều khiển camera IP PTZ của Dahua
-(di chuyển, preset, phát âm thanh/TTS qua loa, đèn spotlight, và Active Deterrence)
+(di chuyển, preset, phát âm thanh/TTS qua loa, và Active Deterrence)
 qua HTTP CGI + Digest Auth. Thông tin kết nối camera (host/port/user/password/channel)
 được cấu hình qua giao diện HA và có thể sửa lại sau — không có gì bị hardcode trong
 integration.
@@ -20,12 +20,11 @@ integration.
   (đồng bộ lại danh sách preset theo yêu cầu).
 - Entity `switch` cho tính năng Active Deterrence của camera (tự động bật đèn+loa+
   voice khi phát hiện chuyển động/người).
-- Entity `light` cho đèn spotlight của camera (độ sáng 0-100%).
 - Entity `media_player` cho loa camera, dùng được như một target bình thường của
   `tts.speak` hoặc `media_player.play_media` — không cần truyền đường dẫn file cố
   định. Hỗ trợ cả audio nguồn WAV và mp3 (qua ffmpeg).
-- Entity `number` **Speaker Volume** (0-100) — thử nghiệm chỉnh âm lượng phát qua
-  NetSDK. **Chưa xác minh trên thiết bị thật**, xem phần Ghi chú bên dưới.
+- Tuỳ chọn **Max audio gain** (100-150%, trong Options) để chỉnh độ to của âm thanh phát
+  ra loa; trên 100% sẽ khuếch đại thêm và có thể bị rè/clip.
 
 ## Danh sách entity
 
@@ -37,9 +36,7 @@ integration.
 | button | Play Alert Tone | Phát 1 tiếng bíp qua loa | NetSDK talk protocol (TCP 37777) |
 | button | Sync Presets | Đồng bộ lại danh sách preset từ camera | `ptz.cgi?action=getPresets` |
 | switch | Active Deterrence | Bật/tắt tự động đèn+loa+voice khi phát hiện | `configManager.cgi` (`LightGlobal[0].Enable`) |
-| light | Spotlight | Bật/tắt đèn spotlight, chỉnh độ sáng | `configManager.cgi` (`Lighting[1][0]`) + thử nghiệm NetSDK song song |
 | media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | NetSDK talk protocol (TCP 37777) |
-| number | Speaker Volume | Đặt âm lượng phát cho lần play tiếp theo | NetSDK talk protocol (TCP 37777), thử nghiệm |
 
 ## Cài đặt
 
@@ -86,7 +83,7 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
   decode qua ffmpeg. Home Assistant OS/Container có sẵn ffmpeg; một số bản cài
   Core/venv hoặc Supervised có thể chưa có ffmpeg trong PATH — nếu phát TTS báo lỗi
   "ffmpeg binary not found", cần cài ffmpeg trên máy chủ.
-- Các lệnh `setConfig` (đèn/Active Deterrence) luôn trả về HTTP 400 trên camera này,
+- Các lệnh `setConfig` (Active Deterrence) luôn trả về HTTP 400 trên camera này,
   kể cả khi ghi thành công — integration sẽ đọc lại giá trị để xác nhận và log ở mức
   debug; đây là hành vi bình thường, không phải lỗi.
 - **Loa (Speaker/Play Alert Tone) đi qua giao thức nhị phân NetSDK của Dahua ở port
@@ -94,21 +91,6 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
   nhưng camera nhận request, đóng kết nối sạch sẽ, mà thực tế không hề phát ra loa
   (kiểm chứng bằng tai trên thiết bị thật) — trong khi app DMSS chính chủ vẫn phát
   được bình thường qua NetSDK, nên integration đã chuyển hẳn sang giao thức đó.
-- Chỉ số bảng cấu hình của đèn spotlight (`Lighting[1][0]`) là **giả định chưa được
-  xác minh bằng mắt** — mới chỉ xác nhận qua đọc lại config, chưa xác nhận đèn thật
-  có sáng lên không. Nếu entity Spotlight không làm đèn sáng lên, sửa `LIGHT_TABLE`
-  trong `custom_components/dahua_controller/const.py` thành `"Lighting[0][0]"` rồi
-  reload lại integration.
-- **Thử nghiệm:** vì nghi ngờ `configManager.cgi` (đèn) cũng gặp tình trạng giống
-  `audio.cgi` (nhận request nhưng không tác động phần cứng thật), `light_set()` giờ
-  bắn thêm một lệnh NetSDK song song (best-effort, không ảnh hưởng tới trạng thái CGI
-  hiện có) — theo dõi log HA với từ khoá `[NetSDK][light]` để xem camera phản hồi gì,
-  vì tên `ParameterName` (`const.NETSDK_LIGHT_PARAM`) hiện là **suy đoán chưa được xác
-  minh**, ngoại suy từ đối tượng NetSDK duy nhất đã xác nhận hoạt động
-  (`Dahua.Device.Network.Talk.General`, dùng cho loa).
-- **Thử nghiệm:** entity `number` Speaker Volume gửi thêm trường `Volume` trong phiên
-  NetSDK talk (`DahuaNetSDKTalk.volume`) — cũng là suy đoán chưa xác minh, không có
-  cách đọc lại mức âm lượng thật của camera, nên hãy tự kiểm tra bằng tai.
 
 ## Camera tương thích
 

@@ -15,7 +15,14 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_CHANNEL, DEFAULT_SCAN_INTERVAL, DOMAIN, PLATFORMS
+from .const import (
+    CONF_AUDIO_MAX_GAIN,
+    CONF_CHANNEL,
+    DEFAULT_AUDIO_GAIN,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    PLATFORMS,
+)
 from .coordinator import DahuaCoordinator
 from .dahua_client import DahuaClient
 
@@ -39,6 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         username=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
         channel=entry.data[CONF_CHANNEL],
+        audio_gain=entry.options.get(CONF_AUDIO_MAX_GAIN, DEFAULT_AUDIO_GAIN),
     )
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)

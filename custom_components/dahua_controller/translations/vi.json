@@ -45,7 +45,8 @@
           "ptz_speed": "Tốc độ PTZ mỗi bước (1-8)",
           "ptz_duration": "Thời lượng mỗi bước PTZ (giây)",
           "ptz_steps": "Số bước PTZ mỗi lần bấm nút",
-          "scan_interval": "Chu kỳ cập nhật trạng thái (giây)"
+          "scan_interval": "Chu kỳ cập nhật trạng thái (giây)",
+          "audio_max_gain": "Độ khuếch đại âm thanh tối đa (100-150 %)"
         }
       }
     }
