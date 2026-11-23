@@ -974,6 +974,24 @@ class DahuaClient:
             f"Position saved to preset {preset_no}, but the camera did not accept the name '{name}'"
         )
 
+    async def delete_preset(self, preset_no: int, presets: list[Preset]) -> Preset:
+        """Clear preset slot `preset_no` (`code=ClearPreset`, arg2 = number;
+        verified on DH-P5D-5F-PV) and confirm it's gone via readback.
+        """
+        preset_no = int(preset_no)
+        target = next((p for p in presets if p.index == preset_no), None)
+        if target is None:
+            raise DahuaClientError(f"Preset slot {preset_no} is empty - nothing to delete")
+        status, body = await self._digest_get(
+            f"/cgi-bin/ptz.cgi?action=start&channel={self._channel}"
+            f"&code=ClearPreset&arg1=0&arg2={preset_no}&arg3=0"
+        )
+        if any(p.index == preset_no for p in await self.fetch_presets()):
+            raise DahuaClientError(
+                f"Camera did not delete preset {preset_no} (HTTP {status} {body.strip()[:60]!r})"
+            )
+        return target
+
     async def _preset_matches(self, preset_no: int, name: str) -> bool:
         return any(
             p.index == preset_no and p.name == name for p in await self.fetch_presets()

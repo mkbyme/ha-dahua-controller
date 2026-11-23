@@ -26,3 +26,19 @@ get_presets:
       selector:
         device:
           integration: dahua_controller
+
+delete_preset:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: dahua_controller
+    preset_number:
+      required: true
+      example: 6
+      selector:
+        number:
+          min: 1
+          max: 255
+          mode: box

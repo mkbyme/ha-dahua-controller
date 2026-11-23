@@ -57,7 +57,8 @@ class DahuaPresetSelect(DahuaControllerEntity, RestoreEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        return self._current_option
+        # A deleted/renamed preset must not linger as the selected option.
+        return self._current_option if self._current_option in self.options else None
 
     async def async_select_option(self, option: str) -> None:
         ok = await self._client.goto_preset_by_name(option, self.coordinator.presets)

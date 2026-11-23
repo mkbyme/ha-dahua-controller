@@ -78,6 +78,20 @@
           "description": "The Dahua camera to read presets from."
         }
       }
+    },
+    "delete_preset": {
+      "name": "Delete preset",
+      "description": "Delete the preset stored in a slot. Check slot numbers with Get presets first.",
+      "fields": {
+        "device_id": {
+          "name": "Camera",
+          "description": "The Dahua camera to delete the preset from."
+        },
+        "preset_number": {
+          "name": "Preset number",
+          "description": "Slot 1-255 to delete."
+        }
+      }
     }
   }
 }

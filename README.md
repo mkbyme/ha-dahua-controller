@@ -5,8 +5,8 @@
 HACS Điều khiển PTZ, Speaker, thiết lập dahua camera
 
 Custom integration cho Home Assistant, dùng để điều khiển camera IP PTZ của Dahua
-(di chuyển, preset, hiệu chỉnh PTZ, phát âm thanh/TTS qua loa)
-qua HTTP CGI + Digest Auth. Thông tin kết nối camera (host/port/user/password/channel)
+(di chuyển, xem/tạo/xoá preset, hiệu chỉnh PTZ, phát âm thanh/TTS qua loa) qua HTTP
+CGI + Digest Auth, JSON-RPC (RPC2) và giao thức NetSDK của Dahua (TCP 37777). Thông tin kết nối camera (host/port/user/password/channel)
 được cấu hình qua giao diện HA và có thể sửa lại sau — không có gì bị hardcode trong
 integration.
 
@@ -23,11 +23,10 @@ integration.
   preset bị lệch dù không ai xoay camera bằng tay, hoặc sau khi rớt mạng / mất điện
   đột ngột làm camera "nhớ sai" vị trí. Camera sẽ quay hết hành trình pan/tilt khoảng
   1 phút; các preset đã lưu được giữ nguyên.
-- Action `dahua_controller.create_preset` — lưu vị trí hiện tại của camera thành
-  preset (chọn ô lưu 1-255 + đặt tên), danh sách Preset tự đồng bộ lại.
-- Action `dahua_controller.get_presets` — trả về danh sách ô preset + tên và các ô
-  còn trống, để tránh ghi đè nhầm. Entity Preset cũng hiển thị sẵn trong thuộc tính
-  `presets` / `free_slots`.
+- Quản lý preset bằng action (xem mục [Action quản lý preset](#action-quản-lý-preset)):
+  xem danh sách ô/tên (`get_presets`), lưu vị trí hiện tại thành preset
+  (`create_preset`), xoá preset theo số ô (`delete_preset`). Entity Preset cũng hiển
+  thị sẵn bảng ô → tên và các ô trống trong thuộc tính `presets` / `free_slots`.
 - Entity `media_player` cho loa camera, dùng được như một target bình thường của
   `tts.speak` hoặc `media_player.play_media` — không cần truyền đường dẫn file cố
   định. Hỗ trợ cả audio nguồn WAV và mp3 (qua ffmpeg).
@@ -46,9 +45,22 @@ integration.
 | button | PTZ Calibrate | PTZ self-check, tìm lại gốc để preset hết lệch | RPC2 `ptz.restartPtz` qua HTTP (port 80) → DHIP TCP 37777 → `ptz.cgi code=Restart` |
 | media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | NetSDK talk protocol (TCP 37777) |
 
-## Action: xem và tạo preset
+## Action quản lý preset
 
-Xem các ô đã dùng / còn trống (đọc trực tiếp từ camera):
+| Action | Tham số | Kết quả trả về |
+|---|---|---|
+| `dahua_controller.get_presets` | `device_id` | `presets` (ô + tên), `free_slots` (10 ô trống nhỏ nhất) |
+| `dahua_controller.create_preset` | `device_id`, `name`, `preset_number` (tuỳ chọn) | preset vừa lưu + danh sách mới |
+| `dahua_controller.delete_preset` | `device_id`, `preset_number` | preset vừa xoá + danh sách mới |
+
+Cả 3 action đều đọc lại danh sách trực tiếp từ camera, và entity Preset (select) tự
+cập nhật sau khi tạo/xoá. Thử nhanh trong **Developer Tools → Actions → Perform
+action** để xem kết quả; hoặc gắn vào script để đặt nút trên dashboard. (HA không cho
+đổ danh sách động theo từng camera vào ô chọn của action, nên số ô nhập tay — xem
+trước bằng `get_presets` hoặc thuộc tính `presets` / `free_slots` của
+`select.<camera>_preset`.)
+
+**1. Xem các ô đã dùng / còn trống**
 
 ```yaml
 action: dahua_controller.get_presets
@@ -56,32 +68,39 @@ data:
   device_id: <chọn camera trong UI>
 response_variable: ds
 # ds = {"presets": [{"preset_number": 1, "name": "cửa cuốn"}, ...],
-#       "free_slots": [6, 7, 8, 9, 10, 15, ...]}   # 10 ô trống nhỏ nhất
+#       "free_slots": [6, 7, 8, 9, 10, 15, ...]}
 ```
 
-Trong Developer Tools → Actions bấm **Perform action** sẽ thấy kết quả ngay. Hoặc
-xem thuộc tính `presets` / `free_slots` của entity `select.<camera>_preset`. (HA
-không cho đổ danh sách động theo từng camera vào ô chọn của action, nên số ô vẫn
-nhập tay trong `create_preset`.)
-
-Đưa camera tới vị trí mong muốn (nút PTZ Up/Down/Left/Right), rồi gọi:
+**2. Tạo preset** — đưa camera tới vị trí mong muốn (nút PTZ Up/Down/Left/Right), rồi:
 
 ```yaml
 action: dahua_controller.create_preset
 data:
   device_id: <chọn camera trong UI>
   name: "Cổng chính"
-  preset_number: 5   # tuỳ chọn; bỏ trống = dùng lại ô có cùng tên, hoặc ô trống nhỏ nhất
-response_variable: preset   # tuỳ chọn: {"preset_number": 5, "name": "Cổng chính", "presets": [...], "free_slots": [...]}
+  preset_number: 6   # tuỳ chọn; bỏ trống = dùng lại ô có cùng tên, hoặc ô trống nhỏ nhất
 ```
 
-Ô đã có preset sẽ bị ghi đè. Không cho phép 2 ô trùng tên (Preset select chọn theo
-tên). Vị trí được lưu bằng `ptz.cgi code=SetPreset`, tên được đặt bằng
-`ptz.cgi?action=setPreset&arg1=<ô>&arg2=<tên>` (đã kiểm chứng trên `DH-P5D-5F-PV`;
-lệnh `code=SetPresetName` trong tài liệu bị camera trả 400), rồi xác nhận bằng cách
-đọc lại danh sách preset. Camera giới hạn số ô preset (ô 200 bị từ chối trên
-`DH-P5D-5F-PV`) — nên dùng số ô nhỏ.
-Có thể gắn action này vào một script và đặt nút trên dashboard.
+- Ô đã có preset sẽ bị **ghi đè**; không cho phép 2 ô trùng tên (Preset select chọn
+  theo tên).
+- Camera giới hạn số ô preset (ô 200 bị từ chối trên `DH-P5D-5F-PV`) — nên dùng số ô
+  nhỏ.
+
+**3. Xoá preset theo số ô**
+
+```yaml
+action: dahua_controller.delete_preset
+data:
+  device_id: <chọn camera trong UI>
+  preset_number: 6
+```
+
+Xoá ô trống sẽ báo lỗi "is empty - nothing to delete", không gửi lệnh tới camera.
+
+Giao thức bên dưới (đã kiểm chứng trên `DH-P5D-5F-PV`): lưu vị trí bằng
+`ptz.cgi code=SetPreset` (arg2 = số ô), đặt tên bằng
+`ptz.cgi?action=setPreset&arg1=<ô>&arg2=<tên>` (lệnh `code=SetPresetName` trong tài
+liệu bị camera trả 400), xoá bằng `ptz.cgi code=ClearPreset` (arg2 = số ô).
 
 ## Cài đặt
 
@@ -121,7 +140,7 @@ bấm nút di chuyển, và độ khuếch đại âm thanh tối đa.
 ## Ghi chú / lưu ý
 
 Các ghi chú dưới đây được đúc kết từ việc test trực tiếp trên thiết bị thật
-(`DH-P5D-5F-PV`, IP `192.168.100.110`, có PTZ + Active Deterrence + audio 2 chiều):
+(`DH-P5D-5F-PV`, có PTZ + audio 2 chiều):
 
 - **Cần ffmpeg để phát mp3/TTS.** Phát WAV (`media_player.play_media` với nguồn WAV)
   không cần ffmpeg, nhưng đa số engine TTS mặc định xuất ra mp3, và luồng đó được
@@ -142,7 +161,7 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
   hiệu chỉnh như trên app DMSS), nhưng camera **không trả lời** lệnh `ptz.restartPtz`
   trong lúc board PTZ khởi động lại. Vì vậy timeout ở đúng bước gửi lệnh (sau khi
   đăng nhập + lấy PTZ object đã thành công) được tính là "đã gửi"
-  (`last_method: http_no_reply`) và không gửi lại qua cách khác, tránh hiệu chỉnh 2
+  (`last_method: rpc_http_no_reply`) và không gửi lại qua cách khác, tránh hiệu chỉnh 2
   lần. Trên model này, DHIP JSON ở cổng 37777 không trả lời (`global.login` timeout).
 - **Loa (Speaker/Play Alert Tone) đi qua giao thức nhị phân NetSDK của Dahua ở port
   37777, không phải `audio.cgi`.** `audio.cgi?action=postAudioStream` từng được dùng
@@ -153,8 +172,9 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
 ## Camera tương thích
 
 Được xây dựng và test trên Dahua `DH-P5D-5F-PV`. Về lý thuyết sẽ hoạt động với các
-camera PTZ Dahua khác có cùng bộ CGI `ptz.cgi` / `configManager.cgi` / `audio.cgi`,
-nhưng bộ code PTZ và chỉ số bảng đèn có thể khác nhau tuỳ model/firmware.
+camera PTZ Dahua khác có `ptz.cgi`, JSON-RPC `/RPC2` và NetSDK (TCP 37777), nhưng bộ
+lệnh PTZ, cách đặt tên preset, giới hạn số ô preset và tham số talk/loa có thể khác
+nhau tuỳ model/firmware.
 
 ## License
 

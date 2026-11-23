@@ -78,6 +78,20 @@
           "description": "Camera Dahua cần đọc danh sách preset."
         }
       }
+    },
+    "delete_preset": {
+      "name": "Xoá preset",
+      "description": "Xoá preset đang lưu ở một ô. Nên xem số ô bằng action Lấy danh sách preset trước.",
+      "fields": {
+        "device_id": {
+          "name": "Camera",
+          "description": "Camera Dahua cần xoá preset."
+        },
+        "preset_number": {
+          "name": "Số ô lưu (preset number)",
+          "description": "Ô 1-255 cần xoá."
+        }
+      }
     }
   }
 }
