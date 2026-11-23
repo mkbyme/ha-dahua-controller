@@ -810,6 +810,15 @@ class DahuaClient:
             try:
                 await rpc.login()
                 resp = await rpc.ptz_call(channel0, method, params)
+                if resp.get("no_reply"):
+                    # Delivered on an authenticated session; the camera went
+                    # quiet (e.g. PTZ board restarting). Never resend on the
+                    # next transport, which would trigger the action twice.
+                    _LOGGER.warning(
+                        "[RPC/%s] %s sent, no reply (camera busy) - not retrying elsewhere",
+                        rpc.transport_name, method,
+                    )
+                    return f"{rpc.transport_name}_no_reply", errors
                 _LOGGER.info("[RPC/%s] %s accepted: %s", rpc.transport_name, method, resp)
                 return rpc.transport_name, errors
             except DahuaRpcError as err:
@@ -935,32 +944,34 @@ class DahuaClient:
                 "pick that slot to overwrite it, or use another name"
             )
 
-        # HTTP API v1.40 §7.2.3: SetPreset -> arg2 = preset number;
-        # SetPresetName -> arg1 = preset number, arg2 = title.
+        # 1) Store the current position (HTTP API v1.40 §7.2.3: arg2 = number).
         status, body = await self._digest_get(
             f"/cgi-bin/ptz.cgi?action=start&channel={self._channel}"
             f"&code=SetPreset&arg1=0&arg2={preset_no}&arg3=0"
         )
         if status != 200:
-            _LOGGER.warning("SetPreset %s → HTTP %s %r", preset_no, status, body[:80])
-        status, body = await self._digest_get(
+            raise DahuaClientError(
+                f"Camera rejected SetPreset {preset_no} (HTTP {status} {body.strip()[:60]!r}); "
+                "the slot may be above this model's preset limit - try a lower number"
+            )
+
+        # 2) Name it. Verified on DH-P5D-5F-PV: only `action=setPreset&arg1=<no>
+        # &arg2=<name>` works there; the documented `code=SetPresetName` form
+        # answers 400. Both are tried, the first that the readback confirms wins.
+        encoded = quote(name, safe="")
+        for path in (
+            f"/cgi-bin/ptz.cgi?action=setPreset&channel={self._channel}"
+            f"&arg1={preset_no}&arg2={encoded}",
             f"/cgi-bin/ptz.cgi?action=start&channel={self._channel}"
-            f"&code=SetPresetName&arg1={preset_no}&arg2={quote(name, safe='')}&arg3=0"
-        )
-        if status != 200:
-            _LOGGER.warning("SetPresetName %s → HTTP %s %r", preset_no, status, body[:80])
+            f"&code=SetPresetName&arg1={preset_no}&arg2={encoded}&arg3=0",
+        ):
+            status, body = await self._digest_get(path)
+            if status == 200 and await self._preset_matches(preset_no, name):
+                return Preset(name=name, index=preset_no)
+            _LOGGER.debug("Preset rename via %s → HTTP %s %r", path, status, body[:60])
 
-        if await self._preset_matches(preset_no, name):
-            return Preset(name=name, index=preset_no)
-
-        # CGI didn't stick (some firmware ignores SetPresetName) - try RPC2.
-        _LOGGER.info("Preset %s not confirmed via CGI, trying RPC ptz.setPreset", preset_no)
-        used, errors = await self._rpc_ptz("ptz.setPreset", {"index": preset_no, "name": name})
-        if used and await self._preset_matches(preset_no, name):
-            return Preset(name=name, index=preset_no)
         raise DahuaClientError(
-            f"Camera did not confirm preset {preset_no} '{name}' "
-            f"(CGI + RPC tried{': ' + '; '.join(errors) if errors else ''})"
+            f"Position saved to preset {preset_no}, but the camera did not accept the name '{name}'"
         )
 
     async def _preset_matches(self, preset_no: int, name: str) -> bool:

@@ -47,6 +47,10 @@ class DahuaRpcError(Exception):
     """RPC call failed (transport error, refused login, or result=false)."""
 
 
+class DahuaRpcTimeout(DahuaRpcError):
+    """No reply in time. The request may still have reached the camera."""
+
+
 def _rpc_password_hash(username: str, password: str, realm: str, random_: str) -> str:
     """Dahua 'Default' RPC login hash: MD5(user:random:MD5(user:realm:pass)), upper hex."""
     h1 = hashlib.md5(f"{username}:{realm}:{password}".encode()).hexdigest().upper()
@@ -143,10 +147,13 @@ class _DahuaRpcBase:
     async def logout(self) -> None:
         if not self._session:
             return
+        timeout, self._timeout = self._timeout, 2.0
         try:
             await self.call("global.logout", None, check=False)
         except Exception:  # noqa: BLE001 - best effort
             pass
+        finally:
+            self._timeout = timeout
         self._session = 0
 
     async def ptz_object(self, channel0: int) -> int:
@@ -160,16 +167,29 @@ class _DahuaRpcBase:
         """Call a `ptz.*` method on this channel's PTZ object.
 
         Falls back to calling without an object (some firmware exposes
-        `ptz.*` as plain static methods taking `channel`).
+        `ptz.*` as plain static methods taking `channel`) unless the factory
+        call itself timed out.
+
+        A timeout on the method call itself (after login and the PTZ object
+        both succeeded) is returned as `{"result": None, "no_reply": True}`,
+        not raised. The request did reach the camera, and slow commands like
+        `ptz.restartPtz` can leave the camera silent while the PTZ board
+        restarts. Callers must not resend such a command on another
+        transport.
         """
         params = {"channel": channel0, **(params or {})}
         try:
-            obj = await self.ptz_object(channel0)
+            obj: int | None = await self.ptz_object(channel0)
+        except DahuaRpcTimeout:
+            raise
         except DahuaRpcError as err:
             _LOGGER.debug("[RPC/%s] %s; trying %s without object", self.transport_name, err, method)
-            return await self.call(method, params)
-        return await self.call(method, params, obj)
-
+            obj = None
+        try:
+            return await self.call(method, params, obj)
+        except DahuaRpcTimeout as err:
+            _LOGGER.info("[RPC/%s] %s sent, but %s", self.transport_name, method, err)
+            return {"result": None, "no_reply": True}
 
 class DahuaRpcHttp(_DahuaRpcBase):
     """RPC2 over the camera's HTTP port (`/RPC2_Login`, `/RPC2`)."""
@@ -190,10 +210,12 @@ class DahuaRpcHttp(_DahuaRpcBase):
                 if resp.status != 200:
                     raise DahuaRpcError(f"{message['method']}: HTTP {resp.status} from {url}")
                 text = await resp.text()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        except asyncio.TimeoutError as err:
+            raise DahuaRpcTimeout(f"{message['method']}: no reply within {self._timeout:g}s") from err
+        except aiohttp.ClientError as err:
             raise DahuaRpcError(f"{message['method']}: {type(err).__name__}: {err}") from err
         try:
-            data = json.loads(text.lstrip("﻿"))
+            data = json.loads(text.lstrip("\ufeff"))
         except ValueError as err:
             raise DahuaRpcError(f"{message['method']}: non-JSON reply from {url}") from err
         if not isinstance(data, dict):
@@ -278,7 +300,9 @@ class DahuaRpcDhip(_DahuaRpcBase):
                 data = await asyncio.wait_for(self._read_message(), timeout=self._timeout)
                 if data.get("id") == message.get("id"):
                     return data
-        except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
+        except asyncio.TimeoutError as err:
+            raise DahuaRpcTimeout(f"{message['method']}: no reply within {self._timeout:g}s") from err
+        except (OSError, asyncio.IncompleteReadError) as err:
             raise DahuaRpcError(f"{message['method']}: {type(err).__name__}: {err}") from err
         raise DahuaRpcError(f"{message['method']}: no matching DHIP reply")
 

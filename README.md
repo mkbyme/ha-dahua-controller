@@ -57,8 +57,11 @@ response_variable: preset   # tuỳ chọn: {"preset_number": 5, "name": "Cổng
 ```
 
 Ô đã có preset sẽ bị ghi đè. Không cho phép 2 ô trùng tên (Preset select chọn theo
-tên). Kết quả được xác nhận bằng cách đọc lại danh sách preset từ camera; nếu
-`ptz.cgi SetPreset/SetPresetName` không ăn, integration thử tiếp RPC2 `ptz.setPreset`.
+tên). Vị trí được lưu bằng `ptz.cgi code=SetPreset`, tên được đặt bằng
+`ptz.cgi?action=setPreset&arg1=<ô>&arg2=<tên>` (đã kiểm chứng trên `DH-P5D-5F-PV`;
+lệnh `code=SetPresetName` trong tài liệu bị camera trả 400), rồi xác nhận bằng cách
+đọc lại danh sách preset. Camera giới hạn số ô preset (ô 200 bị từ chối trên
+`DH-P5D-5F-PV`) — nên dùng số ô nhỏ.
 Có thể gắn action này vào một script và đặt nút trên dashboard.
 
 ## Cài đặt
@@ -116,6 +119,12 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
   trong tài liệu, chỉ tính là thành công nếu camera trả `OK`). ONVIF không có thao tác
   tương đương. Phương thức đã thành công/lỗi của lần bấm gần nhất nằm trong thuộc
   tính `last_method`/`last_errors` của entity nút và trong log HA.
+  Đã kiểm chứng trên `DH-P5D-5F-PV`: RPC2 qua HTTP port 80 chạy được (camera xoay
+  hiệu chỉnh như trên app DMSS), nhưng camera **không trả lời** lệnh `ptz.restartPtz`
+  trong lúc board PTZ khởi động lại. Vì vậy timeout ở đúng bước gửi lệnh (sau khi
+  đăng nhập + lấy PTZ object đã thành công) được tính là "đã gửi"
+  (`last_method: http_no_reply`) và không gửi lại qua cách khác, tránh hiệu chỉnh 2
+  lần. Trên model này, DHIP JSON ở cổng 37777 không trả lời (`global.login` timeout).
 - **Loa (Speaker/Play Alert Tone) đi qua giao thức nhị phân NetSDK của Dahua ở port
   37777, không phải `audio.cgi`.** `audio.cgi?action=postAudioStream` từng được dùng
   nhưng camera nhận request, đóng kết nối sạch sẽ, mà thực tế không hề phát ra loa
