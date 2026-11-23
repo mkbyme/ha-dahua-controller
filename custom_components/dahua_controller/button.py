@@ -1,4 +1,5 @@
-"""Button entities for Dahua Controller: PTZ movement, stop, beep alert, sync presets."""
+"""Button entities for Dahua Controller: PTZ movement, stop, beep alert, sync presets,
+PTZ calibration."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -46,6 +48,7 @@ async def async_setup_entry(
     entities.append(DahuaStopButton(runtime, entry))
     entities.append(DahuaAlertTestButton(runtime, entry))
     entities.append(DahuaSyncPresetsButton(runtime, entry))
+    entities.append(DahuaCalibrateButton(runtime, entry))
     async_add_entities(entities)
 
 
@@ -121,3 +124,25 @@ class DahuaSyncPresetsButton(DahuaControllerEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_refresh_presets()
+
+
+class DahuaCalibrateButton(DahuaControllerEntity, ButtonEntity):
+    """Run the camera's PTZ self-check to re-find its mechanical zero.
+
+    Fixes presets that have drifted after long uptime (motor step loss) without
+    anyone physically moving the camera. The camera sweeps its full pan/tilt
+    range for a while (~1 min) before it settles; saved presets are kept.
+    """
+
+    _attr_name = "PTZ Calibrate"
+    _attr_icon = "mdi:crosshairs-gps"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, runtime: DahuaRuntimeData, entry: ConfigEntry) -> None:
+        super().__init__(runtime.coordinator, entry)
+        self._client = runtime.client
+        self._attr_unique_id = f"{entry.unique_id}_ptz_calibrate"
+
+    async def async_press(self) -> None:
+        if not await self._client.ptz_restart():
+            raise HomeAssistantError("Camera rejected the PTZ self-check (Restart) command")

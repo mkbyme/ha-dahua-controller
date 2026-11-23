@@ -5,7 +5,7 @@
 HACS Điều khiển PTZ, Speaker, thiết lập dahua camera
 
 Custom integration cho Home Assistant, dùng để điều khiển camera IP PTZ của Dahua
-(di chuyển, preset, phát âm thanh/TTS qua loa, và Active Deterrence)
+(di chuyển, preset, hiệu chỉnh PTZ, phát âm thanh/TTS qua loa)
 qua HTTP CGI + Digest Auth. Thông tin kết nối camera (host/port/user/password/channel)
 được cấu hình qua giao diện HA và có thể sửa lại sau — không có gì bị hardcode trong
 integration.
@@ -18,8 +18,10 @@ integration.
 - Di chuyển PTZ dưới dạng entity `button`: Up / Down / Left / Right / Stop.
 - Nút "Play Alert Tone" (phát 1 tiếng bíp qua loa camera) và nút "Sync Presets"
   (đồng bộ lại danh sách preset theo yêu cầu).
-- Entity `switch` cho tính năng Active Deterrence của camera (tự động bật đèn+loa+
-  voice khi phát hiện chuyển động/người).
+- Nút "PTZ Calibrate" — chạy PTZ self-check (tương đương "PTZ Restart" trên web UI
+  của camera) để camera tự tìm lại gốc cơ học, xử lý trường hợp chạy lâu ngày các
+  preset bị lệch dù không ai xoay camera bằng tay. Camera sẽ quay hết hành trình
+  pan/tilt khoảng 1 phút; các preset đã lưu được giữ nguyên.
 - Entity `media_player` cho loa camera, dùng được như một target bình thường của
   `tts.speak` hoặc `media_player.play_media` — không cần truyền đường dẫn file cố
   định. Hỗ trợ cả audio nguồn WAV và mp3 (qua ffmpeg).
@@ -35,7 +37,7 @@ integration.
 | button | PTZ Stop | Dừng di chuyển ở mọi hướng | `ptz.cgi?action=stop` (tất cả code) |
 | button | Play Alert Tone | Phát 1 tiếng bíp qua loa | NetSDK talk protocol (TCP 37777) |
 | button | Sync Presets | Đồng bộ lại danh sách preset từ camera | `ptz.cgi?action=getPresets` |
-| switch | Active Deterrence | Bật/tắt tự động đèn+loa+voice khi phát hiện | `configManager.cgi` (`LightGlobal[0].Enable`) |
+| button | PTZ Calibrate | PTZ self-check, tìm lại gốc để preset hết lệch | `ptz.cgi?action=start&code=Restart` |
 | media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | NetSDK talk protocol (TCP 37777) |
 
 ## Cài đặt
@@ -71,7 +73,7 @@ mà không cần xoá rồi thêm lại camera.
 ### Options
 
 Mục **Configure** của entry cho phép chỉnh tốc độ/thời lượng/số bước PTZ mỗi lần
-bấm nút di chuyển, và chu kỳ cập nhật trạng thái đèn/Active Deterrence.
+bấm nút di chuyển, và độ khuếch đại âm thanh tối đa.
 
 ## Ghi chú / lưu ý
 
@@ -83,9 +85,10 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
   decode qua ffmpeg. Home Assistant OS/Container có sẵn ffmpeg; một số bản cài
   Core/venv hoặc Supervised có thể chưa có ffmpeg trong PATH — nếu phát TTS báo lỗi
   "ffmpeg binary not found", cần cài ffmpeg trên máy chủ.
-- Các lệnh `setConfig` (Active Deterrence) luôn trả về HTTP 400 trên camera này,
-  kể cả khi ghi thành công — integration sẽ đọc lại giá trị để xác nhận và log ở mức
-  debug; đây là hành vi bình thường, không phải lỗi.
+- **PTZ Calibrate dùng `code=Restart`, KHÔNG dùng `code=Reset` hay `PositionReset`.**
+  Theo tài liệu Dahua HTTP API, `Reset` là khôi phục cấu hình PTZ mặc định (mất
+  preset), còn `PositionReset` lấy hướng hiện tại (đang bị lệch) làm gốc mới — cả
+  hai đều làm tình trạng lệch tệ hơn.
 - **Loa (Speaker/Play Alert Tone) đi qua giao thức nhị phân NetSDK của Dahua ở port
   37777, không phải `audio.cgi`.** `audio.cgi?action=postAudioStream` từng được dùng
   nhưng camera nhận request, đóng kết nối sạch sẽ, mà thực tế không hề phát ra loa

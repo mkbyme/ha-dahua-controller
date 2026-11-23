@@ -13,7 +13,6 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_PASSWORD,
     CONF_PORT,
-    CONF_SCAN_INTERVAL,
     CONF_USERNAME,
 )
 from homeassistant.core import callback
@@ -30,7 +29,6 @@ from .const import (
     DEFAULT_DURATION,
     DEFAULT_NAME,
     DEFAULT_PORT,
-    DEFAULT_SCAN_INTERVAL,
     DEFAULT_SPEED,
     DEFAULT_STEPS,
     DOMAIN,
@@ -152,7 +150,7 @@ class DahuaControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Non-credential per-camera tunables: PTZ step speed/duration/steps,
-    speaker gain and the coordinator's poll interval. Credentials are edited via the
+    speaker gain. Credentials are edited via the
     reconfigure flow, not here, to avoid the two flows racing.
     """
 
@@ -177,10 +175,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_PTZ_STEPS, default=options.get(CONF_PTZ_STEPS, DEFAULT_STEPS)
                 ): vol.All(vol.Coerce(int), vol.Range(min=1, max=20)),
-                vol.Optional(
-                    CONF_SCAN_INTERVAL,
-                    default=options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                ): vol.All(vol.Coerce(int), vol.Range(min=15, max=3600)),
                 vol.Optional(
                     CONF_AUDIO_MAX_GAIN,
                     default=options.get(CONF_AUDIO_MAX_GAIN, DEFAULT_AUDIO_GAIN),

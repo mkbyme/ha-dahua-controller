@@ -1,4 +1,4 @@
-"""Dahua camera HTTP CGI client: digest auth, PTZ, presets, audio, alarm.
+"""Dahua camera HTTP CGI client: digest auth, PTZ, presets, audio.
 
 Ported from the original pyscript `ptz_control.py`. The digest-auth computation,
 the "setConfig always returns HTTP 400 even on success" quirk, and the "audio POST
@@ -28,7 +28,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
-    ALARM_TABLE,
     AUDIO_BOOST_LIMIT,
     DEFAULT_AUDIO_GAIN,
     AUDIO_TARGET_PEAK,
@@ -795,6 +794,17 @@ class DahuaClient:
         for code in set(DIRECTION_MAP.values()):
             await self._cgi("stop", code)
 
+    async def ptz_restart(self) -> bool:
+        """PTZ self-check ("PTZ Restart" in the web UI): the motor sweeps to
+        its mechanical end stops to re-find its zero reference, which corrects
+        accumulated step loss that makes saved presets drift over time.
+
+        Not to be confused with `code=Reset` (restores PTZ default config,
+        wiping presets) or `code=PositionReset` (re-bases zero on the current,
+        possibly drifted, direction) - both would make drift worse/permanent.
+        """
+        return await self._cgi("start", "Restart")
+
     # ─────────────────────────────────────────────────
     # Presets
     # ─────────────────────────────────────────────────
@@ -932,20 +942,3 @@ class DahuaClient:
         `wav_bytes_to_alaw`/`pcm16_to_alaw` in this module for the WAV path.
         """
         return await self._play_alaw(alaw)
-
-    # ─────────────────────────────────────────────────
-    # Active Deterrence
-    # ─────────────────────────────────────────────────
-    async def alarm_set(self, enable: bool) -> bool:
-        value = "true" if enable else "false"
-        return await self._set_config_field(ALARM_TABLE, "Enable", value)
-
-    async def alarm_get_status(self) -> bool:
-        table_name = ALARM_TABLE.split("[")[0]
-        status, body = await self._digest_get(
-            f"/cgi-bin/configManager.cgi?action=getConfig&name={table_name}"
-        )
-        if status != 200:
-            _LOGGER.error("alarm_get_status HTTP %s", status)
-            return False
-        return f"{ALARM_TABLE}.Enable=true" in body

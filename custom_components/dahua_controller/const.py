@@ -25,7 +25,6 @@ DEFAULT_STEPS = 1
 DEFAULT_AUDIO_GAIN = 100
 MIN_AUDIO_GAIN = 100
 MAX_AUDIO_GAIN = 150
-DEFAULT_SCAN_INTERVAL = 60  # seconds; polls active-deterrence state only
 
 # ── Config flow error/status vocabulary (also used as strings.json keys) ──
 ERROR_CANNOT_CONNECT = "cannot_connect"
@@ -35,7 +34,6 @@ ERROR_UNKNOWN = "unknown"
 PLATFORMS = [
     Platform.SELECT,
     Platform.BUTTON,
-    Platform.SWITCH,
     Platform.MEDIA_PLAYER,
 ]
 
@@ -62,6 +60,3 @@ DEFAULT_TONE_DURATION = 1.0
 # user-facing CONF_AUDIO_MAX_GAIN option (100-150 %) scales on top of it.
 AUDIO_TARGET_PEAK = 0.95
 AUDIO_BOOST_LIMIT = 12.0
-
-# ── Active Deterrence config table ─────────────────────────────────
-ALARM_TABLE = "LightGlobal[0]"
