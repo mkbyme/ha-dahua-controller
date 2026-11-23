@@ -39,5 +39,18 @@ class DahuaCoordinator(DataUpdateCoordinator[None]):
         self.presets = await self.client.fetch_presets()
         self.async_update_listeners()
 
+    def preset_summary(self, free_count: int = 10) -> dict:
+        """Slot → name table plus the lowest free slots, for the get_presets
+        action and the Preset select's attributes (helps avoid overwriting).
+        """
+        used = {p.index for p in self.presets}
+        return {
+            "presets": [
+                {"preset_number": p.index, "name": p.name}
+                for p in sorted(self.presets, key=lambda p: p.index)
+            ],
+            "free_slots": [i for i in range(1, 256) if i not in used][:free_count],
+        }
+
     async def _async_update_data(self) -> None:
         return None

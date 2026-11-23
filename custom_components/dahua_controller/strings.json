@@ -65,7 +65,17 @@
         },
         "preset_number": {
           "name": "Preset number",
-          "description": "Slot 1-255. Leave empty to reuse the slot with the same name, or the lowest free slot. An occupied slot is overwritten."
+          "description": "Slot 1-255. Leave empty to reuse the slot with the same name, or the lowest free slot. An occupied slot is overwritten. Check used slots with Get presets or the Preset entity's attributes (presets / free_slots)."
+        }
+      }
+    },
+    "get_presets": {
+      "name": "Get presets",
+      "description": "Read the camera's preset list (slot number + name) and the lowest free slots. Use it before Create preset to avoid overwriting a slot.",
+      "fields": {
+        "device_id": {
+          "name": "Camera",
+          "description": "The Dahua camera to read presets from."
         }
       }
     }

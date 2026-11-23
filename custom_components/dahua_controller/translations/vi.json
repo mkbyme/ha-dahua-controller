@@ -65,7 +65,17 @@
         },
         "preset_number": {
           "name": "Số ô lưu (preset number)",
-          "description": "Ô 1-255. Để trống: dùng lại ô đang có cùng tên, hoặc ô trống nhỏ nhất. Ô đã có preset sẽ bị ghi đè."
+          "description": "Ô 1-255. Để trống: dùng lại ô đang có cùng tên, hoặc ô trống nhỏ nhất. Ô đã có preset sẽ bị ghi đè. Xem các ô đã dùng bằng action Lấy danh sách preset hoặc thuộc tính presets / free_slots của entity Preset."
+        }
+      }
+    },
+    "get_presets": {
+      "name": "Lấy danh sách preset",
+      "description": "Đọc danh sách preset (số ô + tên) và các ô còn trống từ camera. Dùng trước khi Tạo preset để tránh ghi đè nhầm ô.",
+      "fields": {
+        "device_id": {
+          "name": "Camera",
+          "description": "Camera Dahua cần đọc danh sách preset."
         }
       }
     }

@@ -47,6 +47,15 @@ class DahuaPresetSelect(DahuaControllerEntity, RestoreEntity, SelectEntity):
         return [p.name for p in self.coordinator.presets]
 
     @property
+    def extra_state_attributes(self) -> dict:
+        """Slot numbers next to names, so a new preset doesn't overwrite one by mistake."""
+        summary = self.coordinator.preset_summary()
+        return {
+            "presets": {p["preset_number"]: p["name"] for p in summary["presets"]},
+            "free_slots": summary["free_slots"],
+        }
+
+    @property
     def current_option(self) -> str | None:
         return self._current_option
 

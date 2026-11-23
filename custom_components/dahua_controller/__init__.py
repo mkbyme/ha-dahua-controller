@@ -49,6 +49,7 @@ class DahuaRuntimeData:
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SERVICE_CREATE_PRESET = "create_preset"
+SERVICE_GET_PRESETS = "get_presets"
 ATTR_DEVICE_ID = "device_id"
 ATTR_PRESET_NUMBER = "preset_number"
 ATTR_NAME = "name"
@@ -60,6 +61,7 @@ CREATE_PRESET_SCHEMA = vol.Schema(
         vol.Optional(ATTR_PRESET_NUMBER): vol.All(vol.Coerce(int), vol.Range(min=1, max=255)),
     }
 )
+GET_PRESETS_SCHEMA = vol.Schema({vol.Required(ATTR_DEVICE_ID): cv.string})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -80,7 +82,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise HomeAssistantError(str(err)) from err
         finally:
             await coordinator.async_refresh_presets()
-        return {"preset_number": preset.index, "name": preset.name}
+        return {
+            "preset_number": preset.index,
+            "name": preset.name,
+            **coordinator.preset_summary(),
+        }
+
+    async def _get_presets(call: ServiceCall) -> ServiceResponse:
+        coordinator = _runtime_for_device(hass, call.data[ATTR_DEVICE_ID]).coordinator
+        await coordinator.async_refresh_presets()  # live read, not the cached list
+        return coordinator.preset_summary()
 
     hass.services.async_register(
         DOMAIN,
@@ -88,6 +99,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         _create_preset,
         schema=CREATE_PRESET_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_PRESETS,
+        _get_presets,
+        schema=GET_PRESETS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     return True
 

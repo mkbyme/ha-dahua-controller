@@ -25,6 +25,9 @@ integration.
   1 phút; các preset đã lưu được giữ nguyên.
 - Action `dahua_controller.create_preset` — lưu vị trí hiện tại của camera thành
   preset (chọn ô lưu 1-255 + đặt tên), danh sách Preset tự đồng bộ lại.
+- Action `dahua_controller.get_presets` — trả về danh sách ô preset + tên và các ô
+  còn trống, để tránh ghi đè nhầm. Entity Preset cũng hiển thị sẵn trong thuộc tính
+  `presets` / `free_slots`.
 - Entity `media_player` cho loa camera, dùng được như một target bình thường của
   `tts.speak` hoặc `media_player.play_media` — không cần truyền đường dẫn file cố
   định. Hỗ trợ cả audio nguồn WAV và mp3 (qua ffmpeg).
@@ -35,7 +38,7 @@ integration.
 
 | Platform | Entity | Hành động | Giao thức bên dưới |
 |---|---|---|---|
-| select | Preset | Di chuyển tới preset đã chọn | `ptz.cgi?action=start&code=GotoPreset` |
+| select | Preset | Di chuyển tới preset đã chọn; thuộc tính `presets` (ô → tên), `free_slots` | `ptz.cgi?action=start&code=GotoPreset` |
 | button | PTZ Up/Down/Left/Right | Di chuyển từng bước (start → sleep → stop) | `ptz.cgi?action=start\|stop` |
 | button | PTZ Stop | Dừng di chuyển ở mọi hướng | `ptz.cgi?action=stop` (tất cả code) |
 | button | Play Alert Tone | Phát 1 tiếng bíp qua loa | NetSDK talk protocol (TCP 37777) |
@@ -43,7 +46,23 @@ integration.
 | button | PTZ Calibrate | PTZ self-check, tìm lại gốc để preset hết lệch | RPC2 `ptz.restartPtz` qua HTTP (port 80) → DHIP TCP 37777 → `ptz.cgi code=Restart` |
 | media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | NetSDK talk protocol (TCP 37777) |
 
-## Action: tạo preset
+## Action: xem và tạo preset
+
+Xem các ô đã dùng / còn trống (đọc trực tiếp từ camera):
+
+```yaml
+action: dahua_controller.get_presets
+data:
+  device_id: <chọn camera trong UI>
+response_variable: ds
+# ds = {"presets": [{"preset_number": 1, "name": "cửa cuốn"}, ...],
+#       "free_slots": [6, 7, 8, 9, 10, 15, ...]}   # 10 ô trống nhỏ nhất
+```
+
+Trong Developer Tools → Actions bấm **Perform action** sẽ thấy kết quả ngay. Hoặc
+xem thuộc tính `presets` / `free_slots` của entity `select.<camera>_preset`. (HA
+không cho đổ danh sách động theo từng camera vào ô chọn của action, nên số ô vẫn
+nhập tay trong `create_preset`.)
 
 Đưa camera tới vị trí mong muốn (nút PTZ Up/Down/Left/Right), rồi gọi:
 
@@ -53,7 +72,7 @@ data:
   device_id: <chọn camera trong UI>
   name: "Cổng chính"
   preset_number: 5   # tuỳ chọn; bỏ trống = dùng lại ô có cùng tên, hoặc ô trống nhỏ nhất
-response_variable: preset   # tuỳ chọn: {"preset_number": 5, "name": "Cổng chính"}
+response_variable: preset   # tuỳ chọn: {"preset_number": 5, "name": "Cổng chính", "presets": [...], "free_slots": [...]}
 ```
 
 Ô đã có preset sẽ bị ghi đè. Không cho phép 2 ô trùng tên (Preset select chọn theo
