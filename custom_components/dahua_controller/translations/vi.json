@@ -49,5 +49,25 @@
         }
       }
     }
+  },
+  "services": {
+    "create_preset": {
+      "name": "Tạo preset",
+      "description": "Lưu vị trí PTZ hiện tại của camera thành preset (ô lưu + tên). Danh sách preset tự đồng bộ lại.",
+      "fields": {
+        "device_id": {
+          "name": "Camera",
+          "description": "Camera Dahua cần lưu preset."
+        },
+        "name": {
+          "name": "Tên preset",
+          "description": "Tên hiển thị trong ô chọn Preset."
+        },
+        "preset_number": {
+          "name": "Số ô lưu (preset number)",
+          "description": "Ô 1-255. Để trống: dùng lại ô đang có cùng tên, hoặc ô trống nhỏ nhất. Ô đã có preset sẽ bị ghi đè."
+        }
+      }
+    }
   }
 }

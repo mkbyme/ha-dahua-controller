@@ -127,11 +127,13 @@ class DahuaSyncPresetsButton(DahuaControllerEntity, ButtonEntity):
 
 
 class DahuaCalibrateButton(DahuaControllerEntity, ButtonEntity):
-    """Run the camera's PTZ self-check to re-find its mechanical zero.
+    """Run the camera's PTZ self-check ("PTZ Restart") to re-find its mechanical zero.
 
-    Fixes presets that have drifted after long uptime (motor step loss) without
-    anyone physically moving the camera. The camera sweeps its full pan/tilt
-    range for a while (~1 min) before it settles; saved presets are kept.
+    Fixes presets that land off-target after a power cut or network drop
+    mid-move (the motor's position memory no longer matches reality). The
+    camera sweeps its full pan/tilt range (~1 min) before it settles; saved
+    presets are kept. See `DahuaClient.ptz_calibrate` for the transport
+    fallback order (RPC2 over HTTP -> RPC2 over DHIP/37777 -> legacy CGI).
     """
 
     _attr_name = "PTZ Calibrate"
@@ -142,7 +144,14 @@ class DahuaCalibrateButton(DahuaControllerEntity, ButtonEntity):
         super().__init__(runtime.coordinator, entry)
         self._client = runtime.client
         self._attr_unique_id = f"{entry.unique_id}_ptz_calibrate"
+        self._attr_extra_state_attributes = {}
 
     async def async_press(self) -> None:
-        if not await self._client.ptz_restart():
-            raise HomeAssistantError("Camera rejected the PTZ self-check (Restart) command")
+        used, errors = await self._client.ptz_calibrate()
+        self._attr_extra_state_attributes = {"last_method": used, "last_errors": errors}
+        self.async_write_ha_state()
+        if not used:
+            raise HomeAssistantError(
+                "Camera rejected the PTZ self-check on every transport: " + " | ".join(errors)
+            )
+        _LOGGER.info("PTZ calibrate accepted via %s", used)

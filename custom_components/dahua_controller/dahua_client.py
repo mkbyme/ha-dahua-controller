@@ -20,7 +20,7 @@ import os
 import struct
 import wave
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
 
@@ -33,6 +33,7 @@ from .const import (
     AUDIO_TARGET_PEAK,
     DIRECTION_MAP,
 )
+from .dahua_rpc import DahuaRpcDhip, DahuaRpcError, DahuaRpcHttp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -794,16 +795,62 @@ class DahuaClient:
         for code in set(DIRECTION_MAP.values()):
             await self._cgi("stop", code)
 
-    async def ptz_restart(self) -> bool:
-        """PTZ self-check ("PTZ Restart" in the web UI): the motor sweeps to
-        its mechanical end stops to re-find its zero reference, which corrects
-        accumulated step loss that makes saved presets drift over time.
+    async def _rpc_ptz(self, method: str, params: dict | None = None) -> tuple[str | None, list[str]]:
+        """Run one `ptz.*` RPC method over HTTP/RPC2, then DHIP/37777.
 
-        Not to be confused with `code=Reset` (restores PTZ default config,
-        wiping presets) or `code=PositionReset` (re-bases zero on the current,
-        possibly drifted, direction) - both would make drift worse/permanent.
+        Returns (name of the transport that accepted it or None, error list).
         """
-        return await self._cgi("start", "Restart")
+        errors: list[str] = []
+        channel0 = max(0, int(self._channel) - 1)  # RPC channels are 0-based
+        transports = (  # web port first, then Dahua private port 37777
+            DahuaRpcHttp(self._session, self.base_url, self._username, self._password),
+            DahuaRpcDhip(self._host, self._username, self._password),
+        )
+        for rpc in transports:
+            try:
+                await rpc.login()
+                resp = await rpc.ptz_call(channel0, method, params)
+                _LOGGER.info("[RPC/%s] %s accepted: %s", rpc.transport_name, method, resp)
+                return rpc.transport_name, errors
+            except DahuaRpcError as err:
+                _LOGGER.warning("[RPC/%s] %s failed: %s", rpc.transport_name, method, err)
+                errors.append(f"{rpc.transport_name}: {err}")
+            finally:
+                await rpc.close()
+        return None, errors
+
+    async def ptz_calibrate(self) -> tuple[str | None, list[str]]:
+        """PTZ self-check ("PTZ Restart" in the web UI): the motor sweeps to
+        its mechanical end stops to re-find its zero reference, fixing presets
+        that land off-target after a power cut / network drop mid-move.
+
+        Tried in order, stopping at the first one the camera accepts:
+        1. RPC2 `ptz.restartPtz` over HTTP (the web port, usually 80) - what
+           the web UI's own "PTZ Restart" button calls.
+        2. The same RPC over DHIP on TCP 37777 (Dahua private protocol port).
+        3. Legacy `ptz.cgi ... code=Restart` - NOT in Dahua's HTTP API table,
+           kept only as a last resort; counted as success only if the body
+           says "OK".
+
+        ONVIF has no equivalent operation, so it isn't tried. Never uses
+        `code=Reset` (wipes PTZ config/presets) or `code=PositionReset`
+        (re-bases zero on the current, drifted direction).
+
+        Returns (method that was accepted or None, list of per-method errors).
+        """
+        used, errors = await self._rpc_ptz("ptz.restartPtz")
+        if used:
+            return f"rpc_{used}", errors
+
+        status, body = await self._digest_get(
+            f"/cgi-bin/ptz.cgi?action=start&channel={self._channel}"
+            "&code=Restart&arg1=0&arg2=0&arg3=0"
+        )
+        if status == 200 and body.strip().upper().startswith("OK"):
+            _LOGGER.info("[CGI] ptz.cgi code=Restart answered OK (undocumented code)")
+            return "cgi", errors
+        errors.append(f"cgi: HTTP {status} {body.strip()[:80]!r}")
+        return None, errors
 
     # ─────────────────────────────────────────────────
     # Presets
@@ -856,46 +903,70 @@ class DahuaClient:
             return False
         return await self.goto_preset(match.index)
 
-    async def set_preset(self, name: str, presets: list[Preset]) -> Preset | None:
-        """Save the current position as a preset: overwrite by name if it
-        already exists, else claim the lowest free slot (1-255).
+    async def set_preset(
+        self, name: str, presets: list[Preset], preset_no: int | None = None
+    ) -> Preset:
+        """Save the camera's *current* position as preset `preset_no` named `name`.
+
+        `preset_no` None: reuse the slot that already has this name, else the
+        lowest free slot (1-255). An explicit slot overwrites whatever is
+        stored there. Verified by re-reading the preset list; raises
+        DahuaClientError with the reason if the camera didn't take it.
         """
         name = str(name).strip()
         if not name:
-            _LOGGER.error("preset name không được để trống")
-            return None
+            raise DahuaClientError("Preset name must not be empty")
 
-        existing = {p.name: p.index for p in presets}
-        if name in existing:
-            preset_no = existing[name]
-        else:
-            used = set(existing.values())
-            try:
-                preset_no = next(i for i in range(1, 256) if i not in used)
-            except StopIteration:
-                _LOGGER.error("Không còn slot preset trống (max 255)")
-                return None
+        by_name = {p.name: p.index for p in presets}
+        if preset_no is None:
+            if name in by_name:
+                preset_no = by_name[name]
+            else:
+                used = {p.index for p in presets}
+                preset_no = next((i for i in range(1, 256) if i not in used), None)
+                if preset_no is None:
+                    raise DahuaClientError("No free preset slot (max 255)")
+        preset_no = int(preset_no)
+        if not 1 <= preset_no <= 255:
+            raise DahuaClientError(f"Preset number {preset_no} out of range 1-255")
+        if name in by_name and by_name[name] != preset_no:
+            raise DahuaClientError(
+                f"Name '{name}' is already used by preset {by_name[name]}; "
+                "pick that slot to overwrite it, or use another name"
+            )
 
-        set_path = (
+        # HTTP API v1.40 §7.2.3: SetPreset -> arg2 = preset number;
+        # SetPresetName -> arg1 = preset number, arg2 = title.
+        status, body = await self._digest_get(
             f"/cgi-bin/ptz.cgi?action=start&channel={self._channel}"
             f"&code=SetPreset&arg1=0&arg2={preset_no}&arg3=0"
         )
-        status, _ = await self._digest_get(set_path)
         if status != 200:
-            _LOGGER.error("SetPreset HTTP %s", status)
-            return None
-
-        rename_path = (
+            _LOGGER.warning("SetPreset %s → HTTP %s %r", preset_no, status, body[:80])
+        status, body = await self._digest_get(
             f"/cgi-bin/ptz.cgi?action=start&channel={self._channel}"
-            f"&code=SetPresetName&arg1=0&arg2={preset_no}&arg3=0&name={name}"
+            f"&code=SetPresetName&arg1={preset_no}&arg2={quote(name, safe='')}&arg3=0"
         )
-        r_status, _ = await self._digest_get(rename_path)
-        if r_status != 200:
-            _LOGGER.warning(
-                "SetPresetName HTTP %s (firmware có thể không hỗ trợ đổi tên preset)", r_status
-            )
+        if status != 200:
+            _LOGGER.warning("SetPresetName %s → HTTP %s %r", preset_no, status, body[:80])
 
-        return Preset(name=name, index=preset_no)
+        if await self._preset_matches(preset_no, name):
+            return Preset(name=name, index=preset_no)
+
+        # CGI didn't stick (some firmware ignores SetPresetName) - try RPC2.
+        _LOGGER.info("Preset %s not confirmed via CGI, trying RPC ptz.setPreset", preset_no)
+        used, errors = await self._rpc_ptz("ptz.setPreset", {"index": preset_no, "name": name})
+        if used and await self._preset_matches(preset_no, name):
+            return Preset(name=name, index=preset_no)
+        raise DahuaClientError(
+            f"Camera did not confirm preset {preset_no} '{name}' "
+            f"(CGI + RPC tried{': ' + '; '.join(errors) if errors else ''})"
+        )
+
+    async def _preset_matches(self, preset_no: int, name: str) -> bool:
+        return any(
+            p.index == preset_no and p.name == name for p in await self.fetch_presets()
+        )
 
     # ─────────────────────────────────────────────────
     # Audio / Speaker

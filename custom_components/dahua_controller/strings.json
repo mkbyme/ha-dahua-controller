@@ -49,5 +49,25 @@
         }
       }
     }
+  },
+  "services": {
+    "create_preset": {
+      "name": "Create preset",
+      "description": "Save the camera's current PTZ position as a preset (slot + name). The preset list refreshes automatically.",
+      "fields": {
+        "device_id": {
+          "name": "Camera",
+          "description": "The Dahua camera to save the preset on."
+        },
+        "name": {
+          "name": "Preset name",
+          "description": "Name shown in the Preset select."
+        },
+        "preset_number": {
+          "name": "Preset number",
+          "description": "Slot 1-255. Leave empty to reuse the slot with the same name, or the lowest free slot. An occupied slot is overwritten."
+        }
+      }
+    }
   }
 }

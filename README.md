@@ -20,8 +20,11 @@ integration.
   (đồng bộ lại danh sách preset theo yêu cầu).
 - Nút "PTZ Calibrate" — chạy PTZ self-check (tương đương "PTZ Restart" trên web UI
   của camera) để camera tự tìm lại gốc cơ học, xử lý trường hợp chạy lâu ngày các
-  preset bị lệch dù không ai xoay camera bằng tay. Camera sẽ quay hết hành trình
-  pan/tilt khoảng 1 phút; các preset đã lưu được giữ nguyên.
+  preset bị lệch dù không ai xoay camera bằng tay, hoặc sau khi rớt mạng / mất điện
+  đột ngột làm camera "nhớ sai" vị trí. Camera sẽ quay hết hành trình pan/tilt khoảng
+  1 phút; các preset đã lưu được giữ nguyên.
+- Action `dahua_controller.create_preset` — lưu vị trí hiện tại của camera thành
+  preset (chọn ô lưu 1-255 + đặt tên), danh sách Preset tự đồng bộ lại.
 - Entity `media_player` cho loa camera, dùng được như một target bình thường của
   `tts.speak` hoặc `media_player.play_media` — không cần truyền đường dẫn file cố
   định. Hỗ trợ cả audio nguồn WAV và mp3 (qua ffmpeg).
@@ -37,8 +40,26 @@ integration.
 | button | PTZ Stop | Dừng di chuyển ở mọi hướng | `ptz.cgi?action=stop` (tất cả code) |
 | button | Play Alert Tone | Phát 1 tiếng bíp qua loa | NetSDK talk protocol (TCP 37777) |
 | button | Sync Presets | Đồng bộ lại danh sách preset từ camera | `ptz.cgi?action=getPresets` |
-| button | PTZ Calibrate | PTZ self-check, tìm lại gốc để preset hết lệch | `ptz.cgi?action=start&code=Restart` |
+| button | PTZ Calibrate | PTZ self-check, tìm lại gốc để preset hết lệch | RPC2 `ptz.restartPtz` qua HTTP (port 80) → DHIP TCP 37777 → `ptz.cgi code=Restart` |
 | media_player | Speaker | Phát audio WAV/mp3 hoặc TTS qua loa | NetSDK talk protocol (TCP 37777) |
+
+## Action: tạo preset
+
+Đưa camera tới vị trí mong muốn (nút PTZ Up/Down/Left/Right), rồi gọi:
+
+```yaml
+action: dahua_controller.create_preset
+data:
+  device_id: <chọn camera trong UI>
+  name: "Cổng chính"
+  preset_number: 5   # tuỳ chọn; bỏ trống = dùng lại ô có cùng tên, hoặc ô trống nhỏ nhất
+response_variable: preset   # tuỳ chọn: {"preset_number": 5, "name": "Cổng chính"}
+```
+
+Ô đã có preset sẽ bị ghi đè. Không cho phép 2 ô trùng tên (Preset select chọn theo
+tên). Kết quả được xác nhận bằng cách đọc lại danh sách preset từ camera; nếu
+`ptz.cgi SetPreset/SetPresetName` không ăn, integration thử tiếp RPC2 `ptz.setPreset`.
+Có thể gắn action này vào một script và đặt nút trên dashboard.
 
 ## Cài đặt
 
@@ -85,10 +106,16 @@ Các ghi chú dưới đây được đúc kết từ việc test trực tiếp 
   decode qua ffmpeg. Home Assistant OS/Container có sẵn ffmpeg; một số bản cài
   Core/venv hoặc Supervised có thể chưa có ffmpeg trong PATH — nếu phát TTS báo lỗi
   "ffmpeg binary not found", cần cài ffmpeg trên máy chủ.
-- **PTZ Calibrate dùng `code=Restart`, KHÔNG dùng `code=Reset` hay `PositionReset`.**
-  Theo tài liệu Dahua HTTP API, `Reset` là khôi phục cấu hình PTZ mặc định (mất
-  preset), còn `PositionReset` lấy hướng hiện tại (đang bị lệch) làm gốc mới — cả
-  hai đều làm tình trạng lệch tệ hơn.
+- **PTZ Calibrate dùng RPC `ptz.restartPtz`, KHÔNG dùng `code=Reset` hay `PositionReset`.**
+  Bảng code của `ptz.cgi` (Dahua HTTP API for IPC v1.40 §7.2.3) **không có** lệnh
+  self-check/"PTZ Restart"; `Reset` là khôi phục cấu hình PTZ mặc định (mất preset),
+  còn `PositionReset` lấy hướng hiện tại (đang bị lệch) làm gốc mới — cả hai đều làm
+  lệch tệ hơn. Nút "PTZ Restart" trên web UI gọi JSON-RPC `ptz.restartPtz` trên object
+  `ptz.factory.instance`; integration thử lần lượt: RPC2 qua HTTP (`/RPC2`, port cấu
+  hình) → cùng RPC đó đóng gói DHIP qua TCP 37777 → `ptz.cgi code=Restart` (không có
+  trong tài liệu, chỉ tính là thành công nếu camera trả `OK`). ONVIF không có thao tác
+  tương đương. Phương thức đã thành công/lỗi của lần bấm gần nhất nằm trong thuộc
+  tính `last_method`/`last_errors` của entity nút và trong log HA.
 - **Loa (Speaker/Play Alert Tone) đi qua giao thức nhị phân NetSDK của Dahua ở port
   37777, không phải `audio.cgi`.** `audio.cgi?action=postAudioStream` từng được dùng
   nhưng camera nhận request, đóng kết nối sạch sẽ, mà thực tế không hề phát ra loa
